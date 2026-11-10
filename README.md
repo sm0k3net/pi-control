@@ -2,7 +2,7 @@
 
 **A lightweight control panel for a portable Raspberry Pi workspace.**
 
-[Русская версия](README.ru.md) · [Architecture and operations](docs/OPERATIONS.md) · [Source snapshot](src/)
+[Русская версия](README.ru.md) · [Architecture](docs/ARCHITECTURE.md) · [Installation](docs/INSTALLATION.md) · [User guide](docs/USER-GUIDE.md) · [Source snapshot](src/)
 
 > **Development snapshot, not a turnkey release.** This repository contains the available panel source, captured on 9 November 2026. It has not been reconciled with the running Raspberry Pi since capture. Host scripts, container definitions, service units, runtime configuration and some image assets are missing. A clean installation cannot yet reproduce the running system. Do not run this snapshot on an exposed network or use it as a production installer.
 
@@ -12,9 +12,23 @@ Pi Control is intended to make a Raspberry Pi useful as a portable companion for
 
 These are actual screenshots supplied by the project owner from an earlier version. They show the Russian interface and may differ from the present source. Network addresses are omitted from the monitoring crop.
 
+### Sign in
+
+![Sign-in screen](docs/images/login.png)
+
+### Overview
+
+![Dashboard overview](docs/images/overview.png)
+
+### Services
+
+![Service cards](docs/images/services.png)
+
 ### Monitoring
 
 ![System monitoring](docs/images/monitoring.png)
+
+![Storage breakdown](docs/images/storage.png)
 
 ### Two-pane files
 
