@@ -5,6 +5,7 @@ import alert_settings
 import harness_login
 import harness_bridge
 import wifi_adapters
+import wifi_audit
 import features
 import control3
 import vault
@@ -182,8 +183,8 @@ class Handler(BaseHTTPRequestHandler):
    d=json.loads(self.rfile.read(n));return d if isinstance(d,dict) else None
   except Exception:return None
  def do_GET(self):
-  if self.path in ('/','/index.html','/app.js','/style.css','/logo.svg','/logo.png','/filemanager.js','/xterm.js','/xterm.css','/addon-fit.js'):
-   name={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/style.css':'style.css','/logo.svg':'logo.svg','/logo.png':'logo.png','/filemanager.js':'filemanager.js','/xterm.js':'xterm.js','/xterm.css':'xterm.css','/addon-fit.js':'addon-fit.js'}[self.path]; typ={'html':'text/html; charset=utf-8','js':'application/javascript; charset=utf-8','css':'text/css; charset=utf-8','svg':'image/svg+xml','png':'image/png'}[name.rsplit('.',1)[1]]
+  if self.path in ('/','/index.html','/app.js','/style.css','/logo.svg','/logo.png','/filemanager.js','/wifi-audit.js','/xterm.js','/xterm.css','/addon-fit.js'):
+   name={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/style.css':'style.css','/logo.svg':'logo.svg','/logo.png':'logo.png','/filemanager.js':'filemanager.js','/wifi-audit.js':'wifi-audit.js','/xterm.js':'xterm.js','/xterm.css':'xterm.css','/addon-fit.js':'addon-fit.js'}[self.path]; typ={'html':'text/html; charset=utf-8','js':'application/javascript; charset=utf-8','css':'text/css; charset=utf-8','svg':'image/svg+xml','png':'image/png'}[name.rsplit('.',1)[1]]
    try:self.respond(200,(ROOT/name).read_bytes(),typ)
    except OSError:self.respond(404,{'error':'Не найдено'})
    return
@@ -230,6 +231,7 @@ class Handler(BaseHTTPRequestHandler):
   if self.path=='/api/chats':return self.respond(200,features.get_chats())
   if self.path=='/api/interfaces':return self.respond(200,devices7.interfaces())
   if self.path=='/api/wifi-adapters':return self.respond(200,wifi_adapters.adapters())
+  if self.path=='/api/wifi-audit':return self.respond(200,wifi_audit.status())
   if self.path=='/api/bluetooth-inventory':return self.respond(200,devices7.bluetooth_inventory())
   if self.path=='/api/bluetooth-history':return self.respond(200,devices7.bluetooth_history())
   if self.path=='/api/ai-config':
@@ -311,6 +313,11 @@ class Handler(BaseHTTPRequestHandler):
     elif self.path=='/api/feature/cluster-health':result=cluster5.health(data)
     elif self.path=='/api/feature/wifi-scan':result=discovery5.wifi_scan(data)
     elif self.path=='/api/feature/wifi-mode':result=wifi_adapters.set_mode(data)
+    elif self.path=='/api/feature/wifi-audit-start':result=wifi_audit.start(data)
+    elif self.path=='/api/feature/wifi-audit-stop':result=wifi_audit.stop()
+    elif self.path=='/api/feature/wifi-audit-deauth':result=wifi_audit.deauth(data)
+    elif self.path=='/api/feature/wifi-audit-convert':result=wifi_audit.convert()
+    elif self.path=='/api/feature/wifi-audit-export':result=wifi_audit.export(data)
     elif self.path=='/api/feature/bluetooth-scan':result=discovery5.bluetooth_scan()
     elif self.path=='/api/feature/bluetooth-info':result=devices7.bluetooth_info(data)
     elif self.path=='/api/feature/bluetooth-record':result=devices7.bluetooth_record(data)
