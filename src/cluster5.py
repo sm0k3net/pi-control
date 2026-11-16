@@ -66,3 +66,16 @@ def action(d):
  if op=='status':return peer(n,secret)
  if op=='service':return peer(n,secret,str(d.get('service','')),str(d.get('action','')))
  raise ValueError('Неизвестная операция.')
+
+def health(d):
+ """Check pinned TLS reachability without revealing secrets or requesting node status."""
+ n=next((x for x in get() if x['id']==str(d.get('id',''))),None)
+ if not n:raise ValueError('Узел не найден.')
+ if not addr_ok(n.get('host','')):raise ValueError('Адрес узла недопустим.')
+ conn=http.client.HTTPSConnection(n['host'],n['port'],context=ssl._create_unverified_context(),timeout=5)
+ try:
+  conn.connect();actual=hashlib.sha256(conn.sock.getpeercert(binary_form=True)).hexdigest().upper()
+  if not hmac.compare_digest(actual,n['fingerprint']):return {'state':'certificate_mismatch','message':'Отпечаток сертификата изменился. Проверьте узел.'}
+  return {'state':'reachable','message':'Панель узла доступна; сертификат совпадает.'}
+ except Exception:return {'state':'unreachable','message':'Панель узла недоступна по сети.'}
+ finally:conn.close()

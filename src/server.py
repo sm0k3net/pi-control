@@ -289,6 +289,7 @@ class Handler(BaseHTTPRequestHandler):
     elif self.path=='/api/feature/cluster-add':result=cluster5.create(data)
     elif self.path=='/api/feature/cluster-remove':result=cluster5.remove(str(data.get('id','')))
     elif self.path=='/api/feature/cluster-action':result=cluster5.action(data)
+    elif self.path=='/api/feature/cluster-health':result=cluster5.health(data)
     elif self.path=='/api/feature/wifi-scan':result=discovery5.wifi_scan(data)
     elif self.path=='/api/feature/bluetooth-scan':result=discovery5.bluetooth_scan()
     elif self.path=='/api/feature/bluetooth-info':result=devices7.bluetooth_info(data)
