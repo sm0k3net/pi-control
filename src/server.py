@@ -3,6 +3,7 @@ import os,json,time,ssl,hmac,secrets,threading,subprocess,urllib.request,urllib.
 import extras
 import alert_settings
 import harness_login
+import harness_bridge
 import features
 import control3
 import vault
@@ -354,4 +355,4 @@ class Handler(BaseHTTPRequestHandler):
    ok,msg=send_telegram('🍓 sm0k3-pi: тестовое уведомление. Панель управления подключена.');return self.respond(200 if ok else 400,{'ok':ok,'message':msg})
   return self.respond(404,{'error':'Не найдено'})
 if __name__=='__main__':
- threading.Thread(target=terminal9.reap,daemon=True).start();threading.Thread(target=observability8.wifi_background,daemon=True).start();threading.Thread(target=monitor,daemon=True).start();threading.Thread(target=control3.background,args=(SERVICES,),daemon=True).start();server=ThreadingHTTPServer(('127.0.0.1',18443),Handler); ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);ctx.minimum_version=ssl.TLSVersion.TLSv1_2;ctx.load_cert_chain(str(ROOT/'cert.pem'),str(ROOT/'key.pem'));server.socket=ctx.wrap_socket(server.socket,server_side=True);server.serve_forever()
+ harness_bridge.start();threading.Thread(target=terminal9.reap,daemon=True).start();threading.Thread(target=observability8.wifi_background,daemon=True).start();threading.Thread(target=monitor,daemon=True).start();threading.Thread(target=control3.background,args=(SERVICES,),daemon=True).start();server=ThreadingHTTPServer(('127.0.0.1',18443),Handler); ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);ctx.minimum_version=ssl.TLSVersion.TLSv1_2;ctx.load_cert_chain(str(ROOT/'cert.pem'),str(ROOT/'key.pem'));server.socket=ctx.wrap_socket(server.socket,server_side=True);server.serve_forever()
