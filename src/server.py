@@ -56,6 +56,9 @@ COMMANDS={
  'zap-api:start':['/usr/local/bin/pi-app','zap-api'], 'zap-api:stop':['/usr/local/bin/pi-app','stop','zap-api'],
  'mode-docs:start':['/usr/local/bin/pi-app','docs'], 'vpn:start':['/usr/local/bin/pi-app','vpn'], 'vpn:stop':['/usr/local/bin/pi-app','stop','vpn'],
  'desktop:start':['/usr/local/bin/pi-desktop','on'], 'desktop:stop':['/usr/local/bin/pi-desktop','off'],
+ 'harness:start':['systemctl','start','dsh-web.service'], 'harness:stop':['systemctl','stop','dsh-web.service'],
+ 'novnc:start':['systemctl','--user','-M','sm0k3@','start','novnc-xvnc.service','novnc-desktop.service','novnc-websockify.service'],
+ 'novnc:stop':['systemctl','--user','-M','sm0k3@','stop','novnc-websockify.service','novnc-desktop.service','novnc-xvnc.service'],
  'vnc:start':['runuser','-u','sm0k3','--','/usr/local/bin/pi-vnc','on'], 'vnc:stop':['runuser','-u','sm0k3','--','/usr/local/bin/pi-vnc','off'],
  'office-lan:set':['/usr/local/bin/pi-app','office-lan'], 'office-tail:set':['/usr/local/bin/pi-app','office-tail'],
 }
@@ -98,7 +101,10 @@ def get_status():
  for key,info in SERVICES.items():
   d=containers.get(info['container'],{}); state=d.get('State','missing'); item={'id':key,**info,'state':state,'status':d.get('Status','Не установлен'),'cpu_usage':stats.get(info['container'],{}).get('CPUPerc','—'),'memory_usage':stats.get(info['container'],{}).get('MemUsage','—'),'limits':limits.get(info['container'])}; items.append(item)
  vnc=execsafe(['runuser','-u','sm0k3','--','/usr/local/bin/pi-vnc','status']); vnc_on=any('Xtigervnc' in line and line.lstrip().startswith('2') for line in vnc.splitlines())
- return {'system':sysinfo(),'services':items,'desktop':execsafe(['systemctl','is-active','lightdm'])=='active','vnc':vnc_on,'task':task.copy(),'vpn_configured':Path('/opt/pi-stack/wg0.conf').is_file(),'telegram_configured':bool(read_telegram().get('bot_token') and read_telegram().get('chat_id'))}
+ system=sysinfo();harness=execsafe(['systemctl','is-active','dsh-web.service'])=='active'
+ items.append({'id':'harness','name':'DeepSeek Harness','port':3080,'scheme':'http','path':'/','desc':'ИИ-ассистент · systemd · только Tailscale','group':'ai','state':'running' if harness else 'exited','status':'Служба systemd работает' if harness else 'Служба systemd остановлена','cpu_usage':'—','memory_usage':'—','limits':None,'url_host':system.get('tailscale_ip','')})
+ novnc_units=['novnc-xvnc.service','novnc-desktop.service','novnc-websockify.service'];novnc_states=[execsafe(['systemctl','--user','-M','sm0k3@','is-active',unit])=='active' for unit in novnc_units]
+ return {'system':system,'services':items,'desktop':execsafe(['systemctl','is-active','lightdm'])=='active','vnc':vnc_on,'novnc':all(novnc_states),'novnc_partial':any(novnc_states) and not all(novnc_states),'task':task.copy(),'vpn_configured':Path('/opt/pi-stack/wg0.conf').is_file(),'telegram_configured':bool(read_telegram().get('bot_token') and read_telegram().get('chat_id'))}
 def run_action(key,verb):
  cmd=COMMANDS.get(f'{key}:{verb}')
  if not cmd: return False,'Недоступная операция'
