@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os,json,time,ssl,hmac,secrets,threading,subprocess,urllib.request,urllib.error,shutil,socket,hashlib
 import extras
+import alert_settings
 import features
 import control3
 import vault
@@ -129,7 +130,9 @@ def send_telegram(message):
  data=read_telegram(); token=data.get('bot_token',''); chat=str(data.get('chat_id',''))
  if not token or not chat:return False,'Сначала настройте бота и chat ID'
  try:
-  req=urllib.request.Request('https://api.telegram.org/bot'+token+'/sendMessage',data=json.dumps({'chat_id':chat,'text':message}).encode(),headers={'Content-Type':'application/json'},method='POST')
+  payload={'chat_id':chat,'text':message}; topic=alert_settings.topic_id(data.get('topic_id'))
+  if topic is not None:payload['message_thread_id']=topic
+  req=urllib.request.Request('https://api.telegram.org/bot'+token+'/sendMessage',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'},method='POST')
   with urllib.request.urlopen(req,timeout=12) as resp: payload=json.load(resp)
   return (bool(payload.get('ok')), 'Уведомление отправлено' if payload.get('ok') else 'Telegram отклонил запрос')
  except Exception:return False,'Не удалось отправить уведомление. Проверьте токен, chat ID и сеть.'
@@ -140,16 +143,10 @@ def monitor():
   try:
    c=read_telegram()
    if not c.get('enabled') or not c.get('bot_token') or not c.get('chat_id'):continue
-   x=get_status(); s=x['system']; alerts={}
-   if s['temperature'] is not None and s['temperature']>=80:alerts['temp']=f"Температура {s['temperature']} °C"
-   if s['disk_used']/s['disk_total']>=.85:alerts['disk']=f"Диск заполнен на {round(100*s['disk_used']/s['disk_total'])}%"
-   if s['memory_available']/s['memory_total']<.10:alerts['memory']='Доступно менее 10% оперативной памяти'
-   if s['undervoltage_now']:alerts['power']='Обнаружено пониженное напряжение питания'
-   for item in x['services']:
-    if item['id'] in ('agent','portainer','postgres') and extras.desired_enabled(item['id']) and item['state']!='running':alerts['service_'+item['id']]=item['name']+': сервис не работает'
+   x=get_status();s=x['system']; config=alert_settings.validate_settings(c.get('alerts',{})); alerts=alert_settings.evaluate(s,x['services'],config,extras.desired_enabled)
    now=time.time()
    for key,msg in alerts.items():
-    if now-last.get(key,0)>=1800:
+    if now-last.get(key,0)>=config['repeat_minutes']*60:
      ok,_=send_telegram('🍓 sm0k3-pi\n'+msg)
      if ok:last[key]=now
    for key in list(last):
@@ -225,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
   if self.path=='/api/extras':return self.respond(200,extras.get_info(SERVICES))
   if self.path=='/api/knowledge':return self.respond(200,extras.list_notes())
   if self.path=='/api/telegram':
-   t=read_telegram();return self.respond(200,{'configured':bool(t.get('bot_token') and t.get('chat_id')),'enabled':bool(t.get('enabled')),'chat_id':str(t.get('chat_id',''))})
+   t=read_telegram();return self.respond(200,{'configured':bool(t.get('bot_token') and t.get('chat_id')),'enabled':bool(t.get('enabled')),'chat_id':str(t.get('chat_id','')),'topic_id':t.get('topic_id') or '', 'alerts':alert_settings.validate_settings(t.get('alerts',{}))})
   return self.respond(404,{'error':'Не найдено'})
  def do_POST(self):
   global PASSWORD
@@ -333,7 +330,9 @@ class Handler(BaseHTTPRequestHandler):
    old=read_telegram();token=str(data.get('bot_token','')).strip();chat=str(data.get('chat_id','')).strip();enabled=bool(data.get('enabled',True))
    if not token:token=old.get('bot_token','')
    if not token or len(token)>200 or ':' not in token or not chat.lstrip('-').isdigit() or len(chat)>24:return self.respond(400,{'error':'Укажите токен бота и числовой chat ID'})
-   save_telegram({'bot_token':token,'chat_id':chat,'enabled':enabled});return self.respond(200,{'ok':True,'message':'Настройки сохранены'})
+   try:topic=alert_settings.topic_id(data.get('topic_id'));alerts=alert_settings.validate_settings(data.get('alerts',old.get('alerts',{})))
+   except ValueError as e:return self.respond(400,{'error':str(e)})
+   save_telegram({**old,'bot_token':token,'chat_id':chat,'enabled':enabled,'topic_id':topic,'alerts':alerts});return self.respond(200,{'ok':True,'message':'Настройки сохранены'})
   if self.path=='/api/telegram/test':
    ok,msg=send_telegram('🍓 sm0k3-pi: тестовое уведомление. Панель управления подключена.');return self.respond(200 if ok else 400,{'ok':ok,'message':msg})
   return self.respond(404,{'error':'Не найдено'})

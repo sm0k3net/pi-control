@@ -49,7 +49,7 @@ In **Пароли и секреты**, use KDBX functionality for supported entr
 1. Create a bot using Telegram's BotFather and obtain its token securely.
 2. Start a conversation with the bot or add it to the intended chat; obtain the correct numeric chat ID through a trusted method. Ensure the bot is permitted to post there.
 3. Open **Уведомления**, enter the token and chat ID, enable alerts, save and press the test button. The token stays in host configuration and must not be shared or committed.
-4. Confirm reception. The source checks temperature, disk, available memory, undervoltage and selected expected services, with fixed thresholds and rate limits described in [architecture](ARCHITECTURE.md#telegram). CPU percentage is visible but has no threshold alert in the inspected snapshot.
+4. Confirm reception. The source checks temperature, disk, available memory, undervoltage and selected expected services, with fixed thresholds and rate limits described in [architecture](ARCHITECTURE.md#telegram). CPU alerting is optional and disabled by default; configure its threshold in Notifications. Enter an optional topic ID to target a Telegram forum thread.
 5. No alert can be delivered while internet, Telegram, the panel or the bot configuration is unavailable. Check the actual deployment and use independent monitoring if continuous coverage matters.
 
 ## Backups and recovery

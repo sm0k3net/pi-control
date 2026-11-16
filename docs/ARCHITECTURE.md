@@ -62,7 +62,7 @@ Chat requests and recent history are passed to Ollama locally or to Groq/OpenRou
 
 ### Telegram
 
-The monitoring thread samples approximately every 60 seconds when notifications are enabled. The source defines alerts for temperature **≥80 °C**, disk **≥85%**, available memory **<10%**, current undervoltage and expected Agent Zero/Portainer/PostgreSQL services not running. A continuing alert is limited to one successful notification per category per 30 minutes; a recovered category is cleared. Thresholds are hard-coded in this snapshot. There is **no CPU-usage threshold alert** in the inspected monitor. Delivery requires the panel, network, valid bot token and chat ID; it is not an independent monitoring system.
+The monitoring thread samples approximately every 60 seconds when notifications are enabled. The source defines alerts for temperature **≥80 °C**, disk **≥85%**, available memory **<10%**, current undervoltage and expected Agent Zero/Portainer/PostgreSQL services not running. A continuing alert is limited to one successful notification per category per 30 minutes; a recovered category is cleared. The default thresholds and repeat interval can be changed in Notifications; CPU alerting is optional and off by default. A configured topic ID is sent as Telegram message_thread_id. Delivery requires the panel, network, valid bot token and chat ID; it is not an independent monitoring system.
 
 ```mermaid
 flowchart LR
