@@ -1,4 +1,5 @@
 import subprocess,re,threading,time
+import wifi_adapters
 from pathlib import Path
 wifi_lock=threading.Lock();bt_lock=threading.Lock()
 def run(args,timeout=15):
@@ -16,17 +17,18 @@ def fields(row):
   else:part+=c
  out.append(part);return out
 def wifi_scan(d):
+ device=wifi_adapters.validate(str(d.get('device') or 'wlan0'))
  target=str(d.get('hidden_ssid','')).strip()
  if target and (len(target.encode())>32 or any(ord(c)<32 for c in target)):raise ValueError('Укажите корректный SSID скрытой сети.')
  with wifi_lock:
-  args=['nmcli','device','wifi','rescan','ifname','wlan0']
+  args=['nmcli','device','wifi','rescan','ifname',device]
   if target:args+=['ssid',target]
   rescan=True
   try:run(args,timeout=15)
   except ValueError:rescan=False
   # Rescan is asynchronous; request NetworkManager's current cache after a short bounded wait.
   time.sleep(3)
-  result=run(['nmcli','-t','--escape','yes','-f','IN-USE,SSID,BSSID,CHAN,SIGNAL,SECURITY','device','wifi','list','ifname','wlan0','--rescan','no'],timeout=20)
+  result=run(['nmcli','-t','--escape','yes','-f','IN-USE,SSID,BSSID,CHAN,SIGNAL,SECURITY','device','wifi','list','ifname',device,'--rescan','no'],timeout=20)
   rows=[]
   for ln in result.splitlines():
    cols=fields(ln)

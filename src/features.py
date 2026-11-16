@@ -1,6 +1,7 @@
 import os,json,time,re,subprocess,shutil,sqlite3,urllib.request,urllib.error,threading
 from pathlib import Path
 import extras
+import wifi_adapters
 ROOT=Path('/opt/pi-dashboard'); CONFIG=ROOT/'ai-providers.json'; DB=ROOT/'chats.sqlite3'; LOCK=threading.Lock()
 def cmd(a,timeout=15):
  p=subprocess.run(a,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=timeout)
@@ -13,31 +14,31 @@ def profiles():
    typ=cmd(['nmcli','-g','connection.type','connection','show','uuid',uuid])
    if typ not in ('802-11-wireless','wifi'):continue
    def get(f):return cmd(['nmcli','-g',f,'connection','show','uuid',uuid])
-   rows.append({'uuid':uuid,'name':get('connection.id'),'ssid':get('802-11-wireless.ssid'),'active':bool(get('GENERAL.DEVICES')!='--' and get('GENERAL.DEVICES')),'hidden':get('802-11-wireless.hidden')=='yes','autoconnect':get('connection.autoconnect')=='yes'})
+   dev=get('GENERAL.DEVICES');rows.append({'uuid':uuid,'name':get('connection.id'),'ssid':get('802-11-wireless.ssid'),'device':dev if dev!='--' else '','active':bool(dev!='--' and dev),'hidden':get('802-11-wireless.hidden')=='yes','autoconnect':get('connection.autoconnect')=='yes'})
   except Exception:continue
  return {'profiles':rows}
 def wifi(d):
- op=d.get('op'); uid=str(d.get('uuid',''));known={x['uuid']:x for x in profiles()['profiles']}
+ op=d.get('op');device=wifi_adapters.validate(str(d.get('device') or 'wlan0')); uid=str(d.get('uuid',''));known={x['uuid']:x for x in profiles()['profiles']}
  if op=='confirm':
-  subprocess.run(['systemctl','stop','pi-wifi-rollback.timer'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);return {'message':'Переключение подтверждено; автоматический возврат отменён.'}
+  subprocess.run(['systemctl','stop','pi-wifi-rollback-'+device+'.timer'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);return {'message':'Переключение подтверждено; автоматический возврат отменён.'}
  if op in ('connect','delete','edit') and uid not in known:raise ValueError('Подключение не найдено.')
  if op=='delete':
   if known[uid]['active']:raise ValueError('Нельзя удалить активное подключение. Сначала переключитесь на другое.')
   cmd(['nmcli','connection','delete','uuid',uid]);return {'message':'Подключение удалено.'}
  if op=='connect':
-  active=next((x['uuid'] for x in known.values() if x['active']),None)
-  if not active:raise ValueError('Нет активного Wi-Fi для автоматического возврата; переключите сеть локально.')
+  if known[uid]['active'] and known[uid].get('device')!=device:raise ValueError('Этот профиль уже используется на другом адаптере; создайте отдельный профиль для выбранного интерфейса.')
+  active=next((x['uuid'] for x in known.values() if x['active'] and x.get('device')==device),None)
   if active==uid:return {'message':'Эта сеть уже активна.'}
-  subprocess.run(['systemctl','stop','pi-wifi-rollback.timer'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-  cmd(['systemd-run','--unit=pi-wifi-rollback','--on-active=120s','/usr/bin/nmcli','connection','up','uuid',active],20)
-  def connect():subprocess.run(['nmcli','--wait','45','connection','up','uuid',uid,'ifname','wlan0'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=60)
-  threading.Thread(target=connect,daemon=True).start();return {'message':'Переключаем сеть. Зайдите по новому адресу и подтвердите подключение в течение 2 минут.'}
+  subprocess.run(['systemctl','stop','pi-wifi-rollback-'+device+'.timer'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  if active:cmd(['systemd-run','--unit=pi-wifi-rollback-'+device,'--on-active=120s','/usr/bin/nmcli','connection','up','uuid',active,'ifname',device],20)
+  def connect():subprocess.run(['nmcli','--wait','45','connection','up','uuid',uid,'ifname',device],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=60)
+  threading.Thread(target=connect,daemon=True).start();return {'message':'Переключаем '+device+'. '+('Подтвердите подключение в течение 2 минут для отмены возврата.' if active else 'Ранее активной сети на адаптере не было.')}
  if op in ('add','edit'):
   ssid=str(d.get('ssid','')).strip();name=str(d.get('name','')).strip() or ssid;pw=str(d.get('password',''));hidden=bool(d.get('hidden'));auto=bool(d.get('autoconnect',True))
   if not ssid or len(ssid.encode())>32 or len(name)>80 or '\n' in ssid+name:raise ValueError('Укажите корректное имя и SSID сети.')
   if pw and not (8<=len(pw)<=63 or re.fullmatch('[0-9A-Fa-f]{64}',pw)):raise ValueError('Пароль WPA должен содержать 8–63 символа или 64 шестнадцатеричных знака.')
   if op=='add':
-   before=set(known);cmd(['nmcli','connection','add','type','wifi','ifname','wlan0','con-name',name,'ssid',ssid]);created=[x['uuid'] for x in profiles()['profiles'] if x['uuid'] not in before];uid=created[0] if len(created)==1 else None
+   before=set(known);cmd(['nmcli','connection','add','type','wifi','ifname','*','con-name',name,'ssid',ssid]);created=[x['uuid'] for x in profiles()['profiles'] if x['uuid'] not in before];uid=created[0] if len(created)==1 else None
    if not uid:raise ValueError('Профиль создан, но не найден; проверьте NetworkManager.')
   args=['nmcli','connection','modify','uuid',uid,'connection.id',name,'802-11-wireless.ssid',ssid,'802-11-wireless.hidden','yes' if hidden else 'no','connection.autoconnect','yes' if auto else 'no']
   if pw:args+=['wifi-sec.key-mgmt','wpa-psk','wifi-sec.psk',pw]

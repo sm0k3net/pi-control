@@ -18,7 +18,7 @@ def interfaces():
   if name!='wlan0' and not (dev.exists() and '/usb' in str(dev.resolve())):continue
   defaults=[r for r in routes if r.get('dev')==name]
   rs=sorted(defaults,key=lambda r:r.get('metric',0));route=rs[0] if rs else {}
-  output.append({'device':name,'kind':'Wi-Fi' if name=='wlan0' else 'USB-сетевой адаптер','addresses':[a.get('local','')+'/'+str(a.get('prefixlen','')) for a in x.get('addr_info',[]) if a.get('family')=='inet'],'gateway':route.get('gateway',''),'metric':route.get('metric'),'state':x.get('operstate','UNKNOWN'),'usb_path':str(dev.resolve()) if dev.exists() and name!='wlan0' else ''})
+  output.append({'device':name,'kind':('Wi-Fi · USB' if dev.exists() and '/usb' in str(dev.resolve()) else 'Wi-Fi') if (Path('/sys/class/net')/name/'phy80211').exists() else 'USB-сетевой адаптер','addresses':[a.get('local','')+'/'+str(a.get('prefixlen','')) for a in x.get('addr_info',[]) if a.get('family')=='inet'],'gateway':route.get('gateway',''),'metric':route.get('metric'),'state':x.get('operstate','UNKNOWN'),'usb_path':str(dev.resolve()) if dev.exists() and name!='wlan0' else ''})
  primary=min(routes,key=lambda r:r.get('metric',0)).get('dev','') if routes else ''
  for x in output:x['primary']=x['device']==primary
  return {'interfaces':output,'primary':primary,'message':'Одинаковый шлюз у двух интерфейсов может означать общий канал и не подтверждает независимое резервирование.'}

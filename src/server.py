@@ -4,6 +4,7 @@ import extras
 import alert_settings
 import harness_login
 import harness_bridge
+import wifi_adapters
 import features
 import control3
 import vault
@@ -228,6 +229,7 @@ class Handler(BaseHTTPRequestHandler):
    except Exception:return self.respond(503,{'error':'Не удалось получить Wi-Fi подключения'})
   if self.path=='/api/chats':return self.respond(200,features.get_chats())
   if self.path=='/api/interfaces':return self.respond(200,devices7.interfaces())
+  if self.path=='/api/wifi-adapters':return self.respond(200,wifi_adapters.adapters())
   if self.path=='/api/bluetooth-inventory':return self.respond(200,devices7.bluetooth_inventory())
   if self.path=='/api/bluetooth-history':return self.respond(200,devices7.bluetooth_history())
   if self.path=='/api/ai-config':
@@ -308,6 +310,7 @@ class Handler(BaseHTTPRequestHandler):
     elif self.path=='/api/feature/cluster-action':result=cluster5.action(data)
     elif self.path=='/api/feature/cluster-health':result=cluster5.health(data)
     elif self.path=='/api/feature/wifi-scan':result=discovery5.wifi_scan(data)
+    elif self.path=='/api/feature/wifi-mode':result=wifi_adapters.set_mode(data)
     elif self.path=='/api/feature/bluetooth-scan':result=discovery5.bluetooth_scan()
     elif self.path=='/api/feature/bluetooth-info':result=devices7.bluetooth_info(data)
     elif self.path=='/api/feature/bluetooth-record':result=devices7.bluetooth_record(data)
