@@ -187,6 +187,11 @@ class Handler(BaseHTTPRequestHandler):
    return
   if self.path=='/api/session':return self.respond(200,{'authenticated':self.authenticated()})
   if not self.authenticated():return self.respond(401,{'error':'Требуется вход'})
+  if self.path=='/go/harness':
+   try:
+    url=harness_login.login_url()['url'];self.send_response(303);self.send_header('Location',url);self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','no-referrer');self.send_header('Content-Length','0');self.end_headers();return
+   except ValueError as e:return self.respond(400,{'error':str(e)})
+   except Exception:return self.respond(503,{'error':'Не удалось получить ссылку DeepSeek Harness.'})
   if self.path.startswith('/api/fm/preview?'):
    try:
     from urllib.parse import urlsplit,parse_qs
