@@ -2,6 +2,7 @@
 import os,json,time,ssl,hmac,secrets,threading,subprocess,urllib.request,urllib.error,shutil,socket,hashlib
 import extras
 import alert_settings
+import harness_login
 import features
 import control3
 import vault
@@ -251,6 +252,10 @@ class Handler(BaseHTTPRequestHandler):
    failed['login']=[];token=secrets.token_urlsafe(32);sessions[token]=now+43200
    return self.respond(200,{'ok':True},headers={'Set-Cookie':'pi_session='+token+'; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=43200'})
   if not self.authenticated():return self.respond(401,{'error':'Требуется вход'})
+  if self.path=='/api/harness/login-url':
+   try:return self.respond(200,harness_login.login_url())
+   except ValueError as e:return self.respond(400,{'error':str(e)})
+   except Exception:return self.respond(503,{'error':'Не удалось получить ссылку DeepSeek Harness.'})
   if self.path.startswith('/api/fm/'):
    try:return self.respond(200,files6.dispatch(self.path.rsplit('/',1)[-1],data))
    except ValueError as e:return self.respond(400,{'error':str(e)})
