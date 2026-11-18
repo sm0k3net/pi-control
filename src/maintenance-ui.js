@@ -458,8 +458,8 @@
   if(system){
     const parent=document.getElementById('desktop-status')?.closest('.panel');
     const root=makePanel(system,'Удалённые рабочие столы','Remote desktops',
-      'Подключайтесь к Mac по VNC и Windows по RDP через Tailscale. Первый пароль открывает рабочий стол Pi. Затем в клиенте введите данные удалённой системы.',
-      'Reach Mac over VNC and Windows over RDP via Tailscale. First unlock the Pi desktop. Then enter the remote system credentials in its client.',parent);
+      'Подключайтесь к Mac по VNC и Windows по RDP через Tailscale. Mac открывается напрямую в браузере. Для обычного VNC и RDP сначала откройте рабочий стол Pi.',
+      'Reach Mac over VNC and Windows over RDP via Tailscale. Mac opens directly in your browser. Standard VNC and RDP start on the Pi desktop.',parent);
     const add=node('details','','linked-result');
     add.append(node('summary',label('Добавить устройство','Add a device')));
     const form=node('form','','linked-form'),grid=node('div','','maintenance-grid');
@@ -500,8 +500,10 @@
           run(open,status,async()=>{
             try{
               const result=await request(desktopPath,{op:'open',id:target.id});
-              const url=new URL('http://'+result.address);url.port=result.port;
-              url.pathname='/vnc.html';url.search='?autoconnect=true&resize=scale';url.hash='';
+              const url=result.url?new URL(result.url,location.origin):new URL('http://'+result.address);
+              if(!result.url){
+                url.port=result.port;url.pathname='/vnc.html';url.search='?autoconnect=true&resize=scale';
+              }
               if(tab)tab.location.replace(url.href);
               else {
                 const link=node('a',label('Открыть noVNC','Open noVNC'));
@@ -523,4 +525,306 @@
     };
     refreshWhenVisible(system,async()=>render(await request(desktopPath)),status);
   }
+})();
+
+(() => {
+  const find = id => document.getElementById(id);
+  const el = (tag, text='', cls='') => {
+    const item = document.createElement(tag);
+    item.textContent = text;
+    if (cls) item.className = cls;
+    return item;
+  };
+  const btn = (text, cls='button secondary') => {
+    const item=el('button',text,cls);item.type='button';return item;
+  };
+  const knowledge=find('page-knowledge');
+  if(knowledge && typeof kb!=='undefined'){
+    const layout=knowledge.querySelector('.kb-layout');
+    if(layout){
+      const field=find('kb-text'),preview=find('kb-render'),browse=find('kb-list');
+      const save=find('kb-save'),previewToggle=find('kb-preview'),status=find('kb-status');
+      const breadcrumb=el('nav','','kb-crumbs');
+      breadcrumb.setAttribute('aria-label','Путь к папке');
+      find('kb-path').hidden=true;find('kb-path').after(breadcrumb);
+      const filter=find('kb-search'),count=el('p','','kb-count');
+      const scope=btn('Искать во всей базе','button secondary kb-scope');
+      const results=el('div','','kb-results');results.hidden=true;
+      filter.after(scope,count);browse.after(results);
+      const editorial=el('p','','kb-editor-meta');field.before(editorial);
+      let original='', across=false, version=0, timer, saving=false;
+      const dirty=()=> Boolean(kb.editing && field.value!==original);
+      const mayLeave=()=>!dirty()||confirm('У заметки есть несохранённые изменения. Перейти дальше?');
+      const editState=()=>{
+        save.disabled=!dirty()||saving;
+        previewToggle.disabled=!kb.editing;
+        editorial.textContent=kb.editing?[
+          dirty()?'Есть изменения':'Сохранено',
+          (field.value.trim()?field.value.trim().split(/\s+/u).length:0)+' слов'
+        ].join(' · '):'';
+      };
+      const renderBase=kbRender;
+      kbRender=()=>{
+        renderBase();
+        breadcrumb.replaceChildren();
+        let current='';
+        for(const part of ['База знаний',...kb.path.split('/').filter(Boolean)]){
+          const target=breadcrumb.childElementCount?[current,part].filter(Boolean).join('/'):'';
+          current=target;
+          const crumb=btn(part,'kb-crumb');
+          if(target===kb.path)crumb.setAttribute('aria-current','page');
+          crumb.onclick=()=>{if(!mayLeave())return;clearEditor();kb.path=target;kb.selected=null;kbLoad();};
+          breadcrumb.append(crumb);
+        }
+        if(!across)count.textContent=kb.items.length+' в папке';
+        editState();
+      };
+      const openBase=kbOpen;
+      kbOpen=async name=>{
+        await openBase(name);
+        if(kb.editing){original=field.value;previewToggle.textContent='Просмотр';}
+        editState();
+      };
+      function clearEditor(){
+        kb.editing=null;original='';field.value='';field.hidden=false;
+        preview.hidden=true;find('kb-current').textContent='Откройте заметку';
+        editState();
+      }
+      browse.addEventListener('click',event=>{
+        if(!event.target.closest('button'))return;
+        if(!mayLeave()){event.stopImmediatePropagation();return;}
+        clearEditor();
+      },true);
+      for(const id of ['kb-up','kb-new','kb-delete','kb-rename']){
+        const action=find(id);
+        action.addEventListener('click',event=>{
+          if(!mayLeave()){
+            event.preventDefault();event.stopImmediatePropagation();
+          }else if(id==='kb-up')clearEditor();
+        },true);
+      }
+      field.addEventListener('input',editState);
+      save.onclick=async()=>{
+        if(!dirty()||saving)return;
+        const editing=kb.editing, draft=field.value;
+        saving=true;editState();
+        try{
+          await fmOp('write',{root:'knowledge',...editing,text:draft});
+          const current=await fmOp('read',{root:'knowledge',path:editing.path});
+          if(kb.editing===editing){editing.modified=current.modified;original=draft;status.textContent='Сохранено · '+editing.path;}
+          loadKnowledge();
+        }catch(error){status.textContent=error.message;}
+        finally{saving=false;editState();}
+      };
+      knowledge.addEventListener('keydown',event=>{
+        if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='s'){event.preventDefault();save.click();}
+      });
+      window.addEventListener('beforeunload',event=>{if(dirty())event.preventDefault();});
+      previewToggle.onclick=()=>{
+        if(!kb.editing)return;
+        if(!preview.hidden){
+          preview.hidden=true;field.hidden=false;field.focus();previewToggle.textContent='Просмотр';
+          return;
+        }
+        preview.replaceChildren();
+        let block=null,list=null;
+        for(const line of field.value.split('\n')){
+          if(/^\s*```/.test(line)){
+            if(block)block=null;
+            else {block=el('code');const pre=el('pre');pre.append(block);preview.append(pre);}
+            list=null;continue;
+          }
+          if(block){block.append(document.createTextNode(line+'\n'));continue;}
+          const title=/^(#{1,6})\s+(.+)$/.exec(line);
+          const bullet=/^\s*([-*+]|\d+\.)\s+(.+)$/.exec(line);
+          if(bullet){
+            const kind=/\d/.test(bullet[1])?'ol':'ul';
+            if(!list||list.localName!==kind){list=el(kind);preview.append(list);}
+            list.append(el('li',bullet[2]));continue;
+          }
+          list=null;
+          if(title)preview.append(el('h'+Math.min(6,title[1].length+1),title[2]));
+          else if(line.trim())preview.append(el('p',line));
+        }
+        preview.hidden=false;field.hidden=true;previewToggle.textContent='Редактировать';
+      };
+      async function search(query, sequence){
+        try{
+          const found=await fmOp('knowledge-search',{query});
+          if(sequence!==version)return;
+          results.replaceChildren();
+          count.textContent=found.items.length+' совпадений · '+found.checked+' заметок'+(found.partial?' · поиск ограничен':'');
+          for(const item of found.items){
+            const hit=btn(item.path,'kb-hit');
+            if(item.snippet)hit.append(el('small',item.snippet));
+            hit.onclick=async()=>{
+              if(!mayLeave())return;
+              clearEditor();
+              const pieces=item.path.split('/'),name=pieces.pop();
+              kb.path=pieces.join('/');kb.selected=name;await kbLoad();await kbOpen(name);
+            };
+            results.append(hit);
+          }
+        }catch(error){if(sequence===version)count.textContent=error.message;}
+      }
+      filter.oninput=()=>{
+        clearTimeout(timer);const current=++version;
+        if(!across){kbRender();return;}
+        const query=filter.value.trim();
+        results.replaceChildren();
+        count.textContent=query.length<2?'Введите не менее двух символов':'Поиск…';
+        if(query.length>=2)timer=setTimeout(()=>search(query,current),260);
+      };
+      scope.onclick=()=>{
+        across=!across; browse.hidden=across;results.hidden=!across;
+        scope.textContent=across?'Искать в текущей папке':'Искать во всей базе';
+        scope.setAttribute('aria-pressed',String(across));filter.oninput();filter.focus();
+      };
+      kbRender();
+    }
+  }
+
+  const page=find('page-terminal');
+  if(!page || typeof Terminal!=='function' || typeof FitAddon==='undefined')return;
+  const stage=find('terminal-emulator'),target=find('terminal-target'),secret=find('terminal-secret');
+  const start=find('terminal-start'),stop=find('terminal-stop'),state=find('terminal-state');
+  if(!stage||!target||!secret||!start||!stop||!state)return;
+  const tabs=el('div','','terminal-tabs');
+  tabs.setAttribute('role','group');tabs.setAttribute('aria-label','Терминальные сессии');
+  const tools=el('div','','terminal-tools');
+  const empty=el('p','Выберите устройство и откройте терминал.','terminal-empty');
+  stage.before(tabs,tools);stage.append(empty);stage.classList.add('terminal-workbench');
+  const sessions=[];
+  let selected=null,creating=false, font=Math.min(20,Math.max(11,Number(localStorage.getItem('pi-terminal-font'))||13));
+  const call=(action,data)=>api('/api/feature/terminal-'+action,{method:'POST',body:JSON.stringify(data)});
+  function render(){
+    tabs.replaceChildren();
+    for(const session of sessions){
+      const tile=btn(session.label,'terminal-tab');
+      tile.setAttribute('aria-pressed',String(session===selected));
+      tile.append(el('small',session.running?'Открыт':'Завершён'));
+      tile.onclick=()=>activate(session);
+      tabs.append(tile);
+    }
+    empty.hidden=!!selected;
+    start.disabled=creating;
+    stop.disabled=!selected;
+    stop.textContent=selected?.running?'Завершить сессию':'Закрыть вкладку';
+    state.textContent=selected?.message || 'Терминал не открыт.';
+  }
+  function fit(session){
+    if(session===selected && page.classList.contains('active'))session.fit.fit();
+  }
+  function activate(session){
+    selected=session;
+    for(const entry of sessions)entry.element.hidden=entry!==session;
+    render();
+    if(session)requestAnimationFrame(()=>{fit(session);session.terminal.focus();});
+  }
+  function send(session,data){
+    if(!session?.running)return;
+    const encoder=new TextEncoder();
+    let chunk='',bytes=0;const chunks=[];
+    for(const point of data){
+      const size=encoder.encode(point).length;
+      if(bytes+size>7000){chunks.push(chunk);chunk='';bytes=0;}
+      chunk+=point;bytes+=size;
+    }
+    if(chunk)chunks.push(chunk);
+    for(const part of chunks){
+      session.queue=session.queue.then(()=>session.running&&call('write',{id:session.id,data:part}))
+        .catch(error=>{session.message=error.message;if(selected===session)render();});
+    }
+  }
+  async function poll(session){
+    if(!session.running)return;
+    try{
+      const data=await call('read',{id:session.id});
+      if(!session.running)return;
+      if(data.data)session.terminal.write(data.data);
+      if(!data.running){
+        session.running=false;session.message='Сессия завершена.';render();return;
+      }
+      if(session.retry){session.retry=0;session.message='Подключено · '+session.label;if(selected===session)render();}
+      session.timer=setTimeout(()=>poll(session),selected===session&&!document.hidden?300:1250);
+    }catch(error){
+      if(!session.running)return;
+      session.retry=(session.retry||0)+1;
+      session.message=error.message;
+      if(/сессия завершена|сессия не найдена|требуется вход/i.test(error.message))session.running=false;
+      if(session===selected||!session.running)render();
+      if(session.running)session.timer=setTimeout(()=>poll(session),Math.min(8000,1500*session.retry));
+    }
+  }
+  function showSecret(){
+    const label=page.querySelector('[for="terminal-secret"]');
+    if(label)label.hidden=!target.value;
+    secret.hidden=!target.value;
+  }
+  target.onchange=()=>{
+    showSecret();
+    const running=sessions.find(item=>item.target===target.value&&item.running);
+    if(running)activate(running);
+  };
+  start.onclick=async()=>{
+    const host=target.value, label=target.selectedOptions[0]?.textContent||'Raspberry Pi';
+    const existing=sessions.find(item=>item.target===host&&item.running);
+    if(existing){activate(existing);return;}
+    if(creating)return;
+    creating=true;render();state.textContent='Подключаемся · '+label;
+    try{
+      const auth=host?{...sshAuth(sshNodeCache.find(n=>n.id===host),secret.value),node_id:host}:{};
+      const data=await call('start',auth);
+      secret.value='';
+      const mount=el('div','','terminal-pane');stage.append(mount);
+      const terminal=new Terminal({cursorBlink:true,scrollback:4000,fontSize:font,theme:{background:'#0e1c16',foreground:'#e5f5eb'}});
+      const fitAddon=new FitAddon.FitAddon();
+      terminal.loadAddon(fitAddon);
+      const session={id:data.id,target:host,label,element:mount,terminal,fit:fitAddon,running:true,
+                     message:data.message,timer:null,queue:Promise.resolve()};
+      sessions.push(session);activate(session);terminal.open(mount);
+      terminal.onData(value=>send(session,value));
+      terminal.onResize(({rows,cols})=>{
+        if(session.running&&cols>=20&&rows>=5)call('resize',{id:session.id,rows,cols}).catch(()=>{});
+      });
+      requestAnimationFrame(()=>fit(session));
+      poll(session);
+    }catch(error){state.textContent=error.message;toast(error.message);}
+    finally{creating=false;start.disabled=false;}
+  };
+  stop.onclick=async()=>{
+    const session=selected;if(!session)return;
+    stop.disabled=true;
+    try{
+      if(session.running)await call('stop',{id:session.id});
+      session.running=false;clearTimeout(session.timer);
+      session.terminal.dispose();session.element.remove();
+      sessions.splice(sessions.indexOf(session),1);
+      activate(sessions.at(-1)||null);
+    }catch(error){state.textContent=error.message;stop.disabled=false;}
+  };
+  find('terminal-form').onsubmit=event=>{
+    event.preventDefault();const input=find('terminal-input');
+    if(!selected?.running){state.textContent='Сначала откройте сессию.';return;}
+    send(selected,input.value+'\r');input.value='';selected.terminal.focus();
+  };
+  for(const [name,data] of [['Ctrl+C','\x03'],['Tab','\t'],['Esc','\x1b']]){
+    const key=btn(name);
+    key.onclick=()=>{send(selected,data);selected?.terminal.focus();};
+    tools.append(key);
+  }
+  const clear=btn('Очистить экран');clear.onclick=()=>selected?.terminal.clear();
+  tools.append(clear);
+  for(const [name,size] of [['A−',-1],['A+',1]]){
+    const change=btn(name);
+    change.onclick=()=>{
+      font=Math.min(20,Math.max(11,font+size));localStorage.setItem('pi-terminal-font',font);
+      for(const session of sessions)session.terminal.options.fontSize=font;
+      if(selected)fit(selected);
+    };
+    tools.append(change);
+  }
+  if(typeof ResizeObserver!=='undefined')new ResizeObserver(()=>{if(selected)fit(selected);}).observe(stage);
+  new MutationObserver(()=>{if(selected)fit(selected);}).observe(page,{attributes:true,attributeFilter:['class']});
+  showSecret();render();
 })();

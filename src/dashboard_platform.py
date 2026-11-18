@@ -15,13 +15,16 @@ ASSETS = {'platform-ui.js': 'application/javascript', 'platform-ui.css': 'text/c
           'cloud-usb-ui.js': 'application/javascript'}
 GET = {'/api/platform/backup', '/api/platform/events', '/api/platform/usb', '/api/platform/postgres',
        '/api/platform/node-tools', '/api/platform/desktop'}
-POST = GET
+POST = GET.copy()
+GET.update(remote_desktop.MAC_GET)
 ROOT = Path(__file__).resolve().parent
 SAMPLE = Path('/run/pi-platform-cpu.json')
 
 
 def get(handler):
     path = urlsplit(handler.path).path
+    if path in remote_desktop.MAC_GET:
+        return remote_desktop.mac_get(handler)
     name = path.removeprefix('/')
     if name in ASSETS:
         return handler.respond(200, (ROOT / name).read_bytes(), ASSETS[name] + '; charset=utf-8')
