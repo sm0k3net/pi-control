@@ -1,0 +1,10 @@
+[Unit]
+Description=Monitor Pi Control notification thresholds
+
+[Timer]
+OnBootSec=40s
+OnUnitInactiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

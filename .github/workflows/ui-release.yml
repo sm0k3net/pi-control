@@ -61,7 +61,13 @@ jobs:
             if [[ "$result" -ne 2 ]]; then exit "$result"; fi
           fi
 
+          notes="docs/releases/$tag.md"
+          if [[ -f "$notes" ]]; then
+            release_notes=(--notes-file "$notes")
+          else
+            release_notes=(--notes "Server components are distributed separately.")
+          fi
           gh release create "$tag" pi-control-ui.zip \
             --target "$GITHUB_SHA" --title "Pi Control UI $version" \
-            --notes "Updates the Pi Control interface. Server components are distributed separately." \
+            "${release_notes[@]}" \
             --generate-notes --latest

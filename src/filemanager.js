@@ -5,7 +5,44 @@ function fmSize(n){if(n<1024)return n+' Б';if(n<1048576)return (n/1024).toFixed
 function fmPath(p,name){return p?p+'/'+name:name}function fmCurrent(){return fm[fm.active]}function fmOther(){return fm[fm.active==='left'?'right':'left']}function fmSelect(side,item){fm.active=side;fm[side].selected=item;fmRender('left');fmRender('right');fmEl('fm-selected').textContent=item?item.name+(item.directory?' · папка':' · '+fmSize(item.size||0))+(item.mode?' · '+item.mode:'')+(item.owner!=null?' · UID '+item.owner+' · GID '+item.group:'')+' · '+(fm[side].kind==='local'?'устройство':'Raspberry Pi'):'Не выбран'}
 function fmActivate(){fmPopulateNodes();if(!fm.loaded){fm.loaded=true;fmLoad('left');fmLoad('right');fmShareStatus()}}
 async function fmPopulateNodes(){try{let d=await api('/api/cluster');sshNodeCache=d.ssh_nodes||[];for(const side of ['left','right']){let select=fmEl('fm-root-'+side);for(const x of [...select.querySelectorAll('option[data-node]')])x.remove();for(const n of sshNodeCache){let o=new Option('SSH · '+n.name,'node:'+n.id);o.dataset.node='1';select.append(o)}fmRender(side)}}catch(e){fmMsg(e.message)}}
-async function fmLoad(side){const p=fm[side];p.selected=null;try{if(p.kind==='node'){let n=sshNodeCache.find(x=>x.id===p.node);let d=await api('/api/feature/node-files',{method:'POST',body:JSON.stringify({...sshAuth(n),path:p.path})});p.items=d.items;fmMsg('SSH · домашняя папка '+d.base+'. Просмотр и скачивание до 8 МиБ; загрузка до 1 МиБ.')}else if(p.kind==='remote'){let d=await api('/api/fm/list',{method:'POST',body:JSON.stringify({root:p.root,path:p.path})});p.items=d.items}else{if(!p.handle){p.items=[];fmRender(side);return}let rows=[];for await(const [name,handle] of p.handle.entries()){let size=0,modified=0;if(handle.kind==='file'){let f=await handle.getFile();size=f.size;modified=Math.floor(f.lastModified/1000)}rows.push({name,directory:handle.kind==='directory',size,modified,handle})}p.items=rows.sort((a,b)=>Number(b.directory)-Number(a.directory)||a.name.localeCompare(b.name))}fmRender(side)}catch(e){fmMsg(e.message)}}
+async function fmLoad(side){
+  const pane=fm[side], revision=(pane.revision||0)+1;
+  pane.revision=revision;
+  pane.selected=null;
+  pane.items=[];
+  fmRender(side);
+  const view=fmEl('fm-list-'+side);
+  view.textContent='Загрузка…';
+  view.setAttribute('aria-busy','true');
+  try {
+    let items=[], message='';
+    if(pane.kind==='node'){
+      const node=sshNodeCache.find(x=>x.id===pane.node);
+      const result=await api('/api/feature/node-files',{method:'POST',body:JSON.stringify({...sshAuth(node),path:pane.path})});
+      items=result.items;
+      message='SSH · '+result.base;
+    }else if(pane.kind==='remote'){
+      items=(await fmOp('list',{root:pane.root,path:pane.path})).items;
+    }else if(pane.handle){
+      for await(const [name,handle] of pane.handle.entries()){
+        if(pane.revision!==revision)return;
+        const file=handle.kind==='file'?await handle.getFile():null;
+        items.push({name,handle,directory:!file,size:file?.size||0,modified:Math.floor((file?.lastModified||0)/1000)});
+      }
+    }
+    if(pane.revision!==revision)return;
+    pane.items=items;
+    fmRender(side);
+    if(message)fmMsg(message);
+  }catch(error){
+    if(pane.revision!==revision)return;
+    view.textContent=error.message;
+    fmMsg(error.message);
+  }finally{
+    if(pane.revision===revision)view.removeAttribute('aria-busy');
+  }
+}
+
 function fmRender(side){let p=fm[side],root=fmEl('fm-list-'+side),filter=fmEl('fm-filter-'+side).value.toLowerCase();root.replaceChildren();fmEl('fm-'+side).classList.toggle('active',fm.active===side);fmEl('fm-path-'+side).textContent=p.kind==='local'?(p.stack.map(x=>x.name).join(' / ')||'Выберите папку устройства'):'/'+p.path;fmEl('fm-root-'+side).value=p.kind==='node'?'node:'+p.node:p.root;if(side==='right'){fmEl('fm-root-right').hidden=p.kind==='local';fmEl('fm-right-title').textContent=p.kind==='local'?'Это устройство':p.kind==='node'?'Удалённый Pi · просмотр':'Вторая панель Pi';fmEl('fm-upload-right').hidden=p.kind==='local'}if(p.kind==='local'&&!p.handle){let el=document.createElement('p');el.className='fm-local-note';el.textContent='Выберите папку устройства. Если браузер не поддерживает доступ к папкам, загрузите файлы через кнопку на панели Pi и скачивайте их обычным способом.';root.append(el);return}let count=0,sort=fmEl('fm-sort-'+side).value,sorted=[...p.items].sort((a,b)=>Number(b.directory)-Number(a.directory)||(sort==='size'?(b.size||0)-(a.size||0):sort==='date'?(b.modified||0)-(a.modified||0):a.name.localeCompare(b.name)));for(const x of sorted){if(!x.name.toLowerCase().includes(filter))continue;count++;let row=document.createElement('div');row.className='fm-row'+(p.selected===x?' selected':'');row.tabIndex=0;let icon=document.createElement('span');icon.className='fm-icon';icon.textContent=x.symlink?'↪':x.directory?'📁':'📄';let info=document.createElement('div'),name=document.createElement('strong'),meta=document.createElement('small');name.textContent=x.name;meta.textContent=x.symlink?'Ссылка · недоступна':[(x.directory?'Папка':fmSize(x.size||0)),x.modified?new Date(x.modified*1000).toLocaleString('ru-RU'):'',x.mode||''].filter(Boolean).join(' · ');info.append(name,meta);let hint=document.createElement(x.directory?'button':'span');if(x.directory){hint.className='fm-open-folder';hint.type='button';hint.textContent='Открыть ›';hint.setAttribute('aria-label','Открыть папку '+x.name);hint.onclick=e=>{e.stopPropagation();fm.active=side;fmOpen(side,x)}}row.append(icon,info,hint);row.onclick=()=>fmSelect(side,x);row.ondblclick=()=>fmOpen(side,x);row.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();fmOpen(side,x)}else if(e.key===' '){e.preventDefault();fmSelect(side,x)}};root.append(row)}if(!count){let e=document.createElement('p');e.className='fm-local-note';e.textContent='Папка пуста или ничего не найдено.';root.append(e)}}
 async function fmOpen(side,x){if(x.symlink)return fmMsg('Символические ссылки не открываются.');if(!x.directory){fmSelect(side,x);return}let p=fm[side];if(p.kind==='remote'||p.kind==='node')p.path=fmPath(p.path,x.name);else{p.stack.push({name:x.name,handle:x.handle});p.handle=x.handle}await fmLoad(side)}
 async function fmUp(side){let p=fm[side];if(p.kind==='remote'||p.kind==='node')p.path=p.path.split('/').slice(0,-1).join('/');else if(p.stack.length>1){p.stack.pop();p.handle=p.stack[p.stack.length-1].handle}await fmLoad(side)}

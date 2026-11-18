@@ -1,0 +1,10 @@
+[Unit]
+Description=Detect Pi Control USB backup volumes
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=25s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
