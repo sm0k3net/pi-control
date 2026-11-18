@@ -6,12 +6,15 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import cloud_postgres
+import node_features
+import remote_desktop
 import platform_events
 import usb_backup
 
 ASSETS = {'platform-ui.js': 'application/javascript', 'platform-ui.css': 'text/css',
           'cloud-usb-ui.js': 'application/javascript'}
-GET = {'/api/platform/backup', '/api/platform/events', '/api/platform/usb', '/api/platform/postgres'}
+GET = {'/api/platform/backup', '/api/platform/events', '/api/platform/usb', '/api/platform/postgres',
+       '/api/platform/node-tools', '/api/platform/desktop'}
 POST = GET
 ROOT = Path(__file__).resolve().parent
 SAMPLE = Path('/run/pi-platform-cpu.json')
@@ -28,6 +31,8 @@ def get(handler):
         data = {'/api/platform/backup': usb_backup.status,
                 '/api/platform/events': platform_events.list_events,
                 '/api/platform/usb': usb_backup.file_roots,
+                '/api/platform/node-tools': node_features.status,
+                '/api/platform/desktop': remote_desktop.status,
                 '/api/platform/postgres': cloud_postgres.status}[path]()
         return handler.respond(200, data)
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -40,6 +45,8 @@ def post(handler, data):
     try:
         result = {'/api/platform/backup': usb_backup.action,
                   '/api/platform/events': platform_events.action,
+                  '/api/platform/node-tools': node_features.action,
+                  '/api/platform/desktop': remote_desktop.action,
                   '/api/platform/postgres': cloud_postgres.action,
                   '/api/platform/usb': lambda _: usb_backup.request_rescan()}[handler.path](data)
         return handler.respond(200, result)

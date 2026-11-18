@@ -5,6 +5,7 @@ import features
 import control3
 import vault
 import product
+import maintenance_web
 import dashboard_platform
 import inventory4
 import discovery5
@@ -178,6 +179,7 @@ class Handler(BaseHTTPRequestHandler):
    d=json.loads(self.rfile.read(n));return d if isinstance(d,dict) else None
   except Exception:return None
  def do_GET(self):
+  if self.path in maintenance_web.GET:return maintenance_web.get(self)
   if self.path in dashboard_platform.GET or self.path in ('/platform-ui.js','/platform-ui.css','/cloud-usb-ui.js'):return dashboard_platform.get(self)
   if self.path in ('/product.js','/product.css','/product-en.json','/api/product/preferences','/api/product/update'):return product.handle_get(self)
   if self.path in ('/','/index.html','/app.js','/style.css','/logo.svg','/logo.png','/filemanager.js','/xterm.js','/xterm.css','/addon-fit.js'):
@@ -257,6 +259,7 @@ class Handler(BaseHTTPRequestHandler):
    except ValueError as e:return self.respond(400,{'error':str(e)})
    except Exception:return self.respond(503,{'error':'Не удалось выполнить файловую операцию.'})
   if self.path in dashboard_platform.POST:return dashboard_platform.post(self,data)
+  if self.path in maintenance_web.POST:return maintenance_web.post(self,data)
   if self.path.startswith('/api/product/'):return product.handle_post(self,data)
   if self.path.startswith('/api/vault/'):
    try:
