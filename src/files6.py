@@ -1,3 +1,4 @@
+import usb_backup
 import os,shutil,stat,time,uuid,threading,zipfile,tarfile,hashlib,html,re,secrets,urllib.parse,subprocess,http.client,json,mimetypes
 from pathlib import Path
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
@@ -6,8 +7,12 @@ uploads={};lock=threading.Lock();share_guard=threading.Lock();shared={'server':N
 def validname(name):
  if not isinstance(name,str) or not name or name in ('.','..') or '/' in name or '\\' in name or '\x00' in name or any(ord(c)<32 for c in name) or len(name.encode())>240:raise ValueError('Недопустимое имя файла.')
  return name
+def root_path(root):
+ if isinstance(root,str) and root.startswith('usb:'):
+  return usb_backup.file_root(root)
+ return ROOTS.get(root)
 def resolve(root,relative='',must=True):
- base=ROOTS.get(root)
+ base=root_path(root)
  if not base:raise ValueError('Неизвестный раздел.')
  if not isinstance(relative,str) or len(relative)>4096 or '\x00' in relative:raise ValueError('Некорректный путь.')
  p=Path(relative)
@@ -16,6 +21,10 @@ def resolve(root,relative='',must=True):
  for part in p.parts:
   validname(part);current=current/part
   if current.is_symlink():raise ValueError('Символические ссылки не поддерживаются.')
+  if root.startswith('usb:') and current.exists():
+   mode=current.stat().st_mode
+   if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)) or current.stat().st_dev!=base.stat().st_dev:
+    raise ValueError('Специальные файлы и вложенные точки монтирования USB недоступны.')
  if must and not current.exists():raise ValueError('Файл или папка не найдены.')
  return current
 def child(parent,name):
@@ -41,12 +50,12 @@ def items(d):
    rows.append({'name':x.name,'directory':isdir,'symlink':symlink,'size':st.st_size,'modified':int(st.st_mtime),'mode':stat.filemode(st.st_mode),'owner':st.st_uid,'group':st.st_gid})
   except OSError:continue
  rows.sort(key=lambda x:(not x['directory'],x['name'].casefold()))
- return {'root':root,'path':str(Path(rel)) if rel else '','items':rows,'roots':[{'id':k,'name':{'home':'Домашняя папка','media':'Носители /media','mnt':'Носители /mnt','knowledge':'База знаний'}[k]} for k in ROOTS]}
+ return {'root':root,'path':str(Path(rel)) if rel else '','items':rows,'roots':[{'id':k,'name':{'home':'Домашняя папка','media':'Носители /media','mnt':'Носители /mnt','knowledge':'База знаний'}[k]} for k in ROOTS]+usb_backup.file_roots()}
 def make_dir(d):
  parent=resolve(d.get('root'),d.get('path',''));p=child(parent,d.get('name',''));p.mkdir();owner(p,parent);return {'message':'Папка создана.'}
 def rename(d):
  p=resolve(d.get('root'),d.get('path',''))
- if p==ROOTS.get(d.get('root')):raise ValueError('Нельзя переименовать корень раздела.')
+ if p==root_path(d.get('root')):raise ValueError('Нельзя переименовать корень раздела.')
  dest=child(p.parent,d.get('name',''));p.rename(dest);return {'message':'Переименовано.'}
 def check_tree(p):
  if p.is_symlink():raise ValueError('Операции с символическими ссылками не поддерживаются.')
@@ -56,10 +65,13 @@ def check_tree(p):
    for n in dirs+files:
     count+=1
     if count>10000:raise ValueError('Слишком много элементов в папке.')
-    if (Path(parent)/n).is_symlink():raise ValueError('Папка содержит символические ссылки.')
+    item=Path(parent)/n
+    metadata=item.lstat()
+    if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)) or metadata.st_dev!=p.stat().st_dev:
+     raise ValueError('Папка содержит ссылку, специальный файл или другую точку монтирования.')
 def transfer(d):
  p=resolve(d.get('root'),d.get('path',''));destdir=resolve(d.get('dest_root'),d.get('dest_path',''))
- if not destdir.is_dir() or p in ROOTS.values():raise ValueError('Недопустимая операция.')
+ if not destdir.is_dir() or p == root_path(d.get('root')):raise ValueError('Недопустимая операция.')
  dest=child(destdir,p.name);op=d.get('op')
  if p.is_dir() and (destdir==p or p in destdir.parents):raise ValueError('Нельзя скопировать папку внутрь самой себя.')
  check_tree(p)
@@ -75,7 +87,7 @@ def transfer(d):
  return {'message':'Операция завершена.'}
 def delete(d):
  p=resolve(d.get('root'),d.get('path',''))
- if p in ROOTS.values():raise ValueError('Нельзя удалить корень раздела.')
+ if p == root_path(d.get('root')):raise ValueError('Нельзя удалить корень раздела.')
  check_tree(p)
  if p.is_dir():shutil.rmtree(p)
  else:p.unlink()
@@ -83,7 +95,7 @@ def delete(d):
 def chmod_item(d):
  p=resolve(d.get('root'),d.get('path',''));mode=str(d.get('mode',''))
  if not re.fullmatch(r'[0-7]{3}',mode):raise ValueError('Укажите права тремя цифрами, например 640 или 755.')
- if p in ROOTS.values():raise ValueError('Нельзя изменять права корня раздела.')
+ if p == root_path(d.get('root')):raise ValueError('Нельзя изменять права корня раздела.')
  os.chmod(p,int(mode,8),follow_symlinks=False);return {'message':'Права изменены.'}
 def make_file(d):
  parent=resolve(d.get('root'),d.get('path',''));p=child(parent,d.get('name',''));fd=os.open(p,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600);os.close(fd);owner(p,parent);return {'message':'Файл создан.'}
@@ -109,18 +121,29 @@ def upload_begin(d):
  with lock:
   for k,u in list(uploads.items()):
    if u['expires']<time.monotonic():
-    try:u['tmp'].unlink()
-    except FileNotFoundError:pass
+    try:discard_upload(u)
+    except OSError:pass
     del uploads[k]
- token=secrets.token_urlsafe(24);tmp=child(parent,'.pi-upload-'+uuid.uuid4().hex);fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600);os.close(fd)
- with lock:uploads[token]={'tmp':tmp,'target':target,'parent':parent,'size':size,'offset':0,'expires':time.monotonic()+3600}
+ token=secrets.token_urlsafe(24);tmp=child(parent,'.pi-upload-'+uuid.uuid4().hex);fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600);fingerprint=identity(os.fstat(fd));os.close(fd)
+ with lock:uploads[token]={'tmp':tmp,'target':target,'parent':parent,'fingerprint':fingerprint,'size':size,'offset':0,'expires':time.monotonic()+3600}
  return {'upload_id':token,'chunk_size':4194304}
+def identity(info):
+ return info.st_dev,info.st_ino
+def discard_upload(upload):
+ try:
+  if identity(upload['tmp'].lstat())==upload['fingerprint']:upload['tmp'].unlink()
+ except FileNotFoundError:pass
+def assert_upload(u):
+ if identity(u['tmp'].lstat())!=u['fingerprint']:raise ValueError('Носитель для загрузки изменился.')
 def upload_chunk(token,data):
  with lock:
   u=uploads.get(token)
   if not u or u['expires']<time.monotonic():raise ValueError('Загрузка не найдена или истекла.')
   if len(data)>4194304 or u['offset']+len(data)>u['size']:raise ValueError('Некорректный размер блока.')
-  with u['tmp'].open('ab') as f:f.write(data)
+  fd=os.open(u['tmp'],os.O_WRONLY|os.O_APPEND|os.O_NOFOLLOW)
+  with os.fdopen(fd,'ab') as f:
+   if identity(os.fstat(f.fileno()))!=u['fingerprint']:raise ValueError('Носитель для загрузки изменился.')
+   f.write(data)
   u['offset']+=len(data);u['expires']=time.monotonic()+3600
   return {'offset':u['offset']}
 def upload_end(d):
@@ -130,6 +153,7 @@ def upload_end(d):
   if not u:raise ValueError('Загрузка не найдена.')
   if u['offset']!=u['size']:raise ValueError('Файл загружен не полностью.')
   if u['target'].exists() or u['target'].is_symlink():raise ValueError('Файл назначения уже существует.')
+  assert_upload(u)
   owner(u['tmp'],u['parent']);fd=os.open(u['target'],os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600);os.close(fd)
   try:os.replace(u['tmp'],u['target'])
   except Exception:
@@ -140,8 +164,8 @@ def upload_cancel(d):
  with lock:
   u=uploads.pop(str(d.get('upload_id','')),None)
   if u:
-   try:u['tmp'].unlink()
-   except FileNotFoundError:pass
+   try:discard_upload(u)
+   except OSError:pass
  return {'message':'Загрузка отменена.'}
 def zip_create(d):
  p=resolve(d.get('root'),d.get('path',''));check_tree(p);dest=child(p.parent,validname(d.get('name','')))
@@ -228,7 +252,7 @@ def public_status():
  return result
 def public_start(d):
  p=resolve(d.get('root'),d.get('path',''));check_tree(p)
- if p in ROOTS.values():raise ValueError('Выберите конкретную папку или файл, а не корень раздела.')
+ if p == root_path(d.get('root')):raise ValueError('Выберите конкретную папку или файл, а не корень раздела.')
  if public_status()['running']:raise ValueError('Сначала остановите текущую публикацию файлов.')
  minutes=d.get('minutes',15)
  if minutes not in (15,60,240):raise ValueError('Недопустимое время публикации.')

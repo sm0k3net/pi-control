@@ -1,0 +1,13 @@
+[Unit]
+Description=Pi Control encrypted USB backup
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/pi-dashboard/usb_backup.py
+Environment=PI_BACKUP_USER=sm0k3
+UMask=0077
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

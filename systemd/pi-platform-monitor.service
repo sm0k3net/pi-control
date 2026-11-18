@@ -1,0 +1,7 @@
+[Unit]
+Description=Sample Pi Control notification thresholds
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/pi-dashboard/dashboard_platform.py
+UMask=0077

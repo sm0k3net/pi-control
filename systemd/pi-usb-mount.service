@@ -1,0 +1,12 @@
+[Unit]
+Description=Pi Control USB mount monitor
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/pi-dashboard/usb_mount_monitor.py
+UMask=0077
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

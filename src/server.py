@@ -5,6 +5,7 @@ import features
 import control3
 import vault
 import product
+import dashboard_platform
 import inventory4
 import discovery5
 import cluster5
@@ -177,6 +178,7 @@ class Handler(BaseHTTPRequestHandler):
    d=json.loads(self.rfile.read(n));return d if isinstance(d,dict) else None
   except Exception:return None
  def do_GET(self):
+  if self.path in dashboard_platform.GET or self.path in ('/platform-ui.js','/platform-ui.css','/cloud-usb-ui.js'):return dashboard_platform.get(self)
   if self.path in ('/product.js','/product.css','/product-en.json','/api/product/preferences','/api/product/update'):return product.handle_get(self)
   if self.path in ('/','/index.html','/app.js','/style.css','/logo.svg','/logo.png','/filemanager.js','/xterm.js','/xterm.css','/addon-fit.js'):
    name={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/style.css':'style.css','/logo.svg':'logo.svg','/logo.png':'logo.png','/filemanager.js':'filemanager.js','/xterm.js':'xterm.js','/xterm.css':'xterm.css','/addon-fit.js':'addon-fit.js'}[self.path]; typ={'html':'text/html; charset=utf-8','js':'application/javascript; charset=utf-8','css':'text/css; charset=utf-8','svg':'image/svg+xml','png':'image/png'}[name.rsplit('.',1)[1]]
@@ -254,6 +256,7 @@ class Handler(BaseHTTPRequestHandler):
    try:return self.respond(200,files6.dispatch(self.path.rsplit('/',1)[-1],data))
    except ValueError as e:return self.respond(400,{'error':str(e)})
    except Exception:return self.respond(503,{'error':'Не удалось выполнить файловую операцию.'})
+  if self.path in dashboard_platform.POST:return dashboard_platform.post(self,data)
   if self.path.startswith('/api/product/'):return product.handle_post(self,data)
   if self.path.startswith('/api/vault/'):
    try:
