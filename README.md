@@ -86,3 +86,13 @@ node --check src/filemanager.js
 ```
 
 These checks only validate syntax; they do not test deployment, security, service integrations or browser behavior.
+
+### Interface releases
+
+The dashboard provides a Russian/English interface switch and a device-wide default in Settings. Settings → System → Pi Control updates checks the latest stable release in this repository and shows its release notes.
+
+The update button installs the verified UI bundle `pi-control-ui.zip` attached to a newer semver release. The updater verifies GitHub's asset digest before activating the bundle. It updates JavaScript, CSS and the translation catalog. Backend upgrades continue to use the installation procedure. The bundled interface baseline is 1.0.0.
+
+To release a new interface version, increase `UI_VERSION` and merge that change into `main`. With GitHub Actions enabled, the workflow checks the JavaScript, builds the update bundle, generates release notes and publishes the stable release with its bundle attached. Merges without a version change do not publish. The workflow uses the repository-provided token with `contents: write`.
+
+For KeePass, export a KDBX backup from the unlocked vault. A new installation can restore that file directly. An existing vault can merge entries using its existing import action.

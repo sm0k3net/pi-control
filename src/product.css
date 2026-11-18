@@ -1,0 +1,60 @@
+html { --product-berry:#c51a4a; --product-berry-dark:#94153b; }
+#login.login-shell:not(.hidden) {
+  display:grid; grid-template-columns:minmax(0,1.08fr) minmax(0,1fr);
+  padding:0; min-height:100svh; background:#fff; color:#182a25;
+  align-items:stretch; justify-items:stretch;
+}
+.product-login-brand {
+  color:#fff; background:radial-gradient(ellipse at 10% 12%,#ed5578 0,transparent 56%),
+    linear-gradient(150deg,var(--product-berry),var(--product-berry-dark));
+  display:flex; align-items:center; padding:clamp(36px,8vw,120px); overflow:hidden;
+  position:relative; isolation:isolate;
+}
+.product-login-brand::after {
+  content:""; position:absolute; z-index:-1; inset:55% -35% -70% 23%;
+  border:1px solid #ffffff4a; border-radius:50%; box-shadow:0 0 0 55px #ffffff12,0 0 0 110px #ffffff0c;
+}
+.product-brand-name {font-weight:750; font-size:16px}
+.product-login-brand h2 {font-size:clamp(34px,5.7vw,88px); line-height:1.02; letter-spacing:-.055em;margin:30px 0 18px}
+.product-login-brand p {font-size:clamp(15px,1.6vw,20px);max-width:28ch;line-height:1.55;color:#fff}
+#login .login-card {width:min(100%,460px);margin:0 auto;align-self:center;padding:44px 32px;box-shadow:none;border:0;background:#fff;color:#182a25}
+#login .login-card h1 {letter-spacing:-.04em;font-size:clamp(25px,3vw,36px)}
+#login .login-card p,#login .login-foot {color:#586e65}
+#login label {color:#182a25}
+#login input {color:#182a25;background:#f7f9f8;border:1px solid #ccd9d2}
+#login .form-error {color:#a7133b}
+#login .product-lang-switch {justify-content:flex-end;margin:0 0 28px}
+.product-lang-switch {display:inline-flex;gap:3px;align-items:center;vertical-align:middle;margin-inline-end:6px}
+.product-lang-switch button,.product-password-toggle {
+  background:var(--paper,#fff);color:var(--ink,#182a25);border:1px solid var(--line,#dce6df);border-radius:9px;
+  padding:7px 9px;font-size:12px;font-weight:650;
+}
+.product-lang-switch button[aria-pressed=true] {background:#205c47;color:white;border-color:#205c47}
+#login .product-lang-switch button:not([aria-pressed=true]),#login .product-password-toggle {background:white;color:#254637;border-color:#dce6df}
+.product-password-toggle {display:block;margin:8px 0 6px auto}
+.product-settings {margin:0;min-width:0}
+.product-settings form {display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.product-release-versions {font-family:monospace;padding:10px 0;color:var(--ink)}
+.product-settings pre {white-space:pre-wrap;overflow-wrap:anywhere;max-height:32vh;overflow:auto;padding:14px;background:var(--bg);border-radius:10px}
+.product-settings [hidden],#page-vault [hidden] {display:none!important}
+.product-vault-toolbar {display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+.product-vault-toolbar input {flex:1 1 155px;width:auto}
+.product-vault-toolbar select {width:auto;max-width:100%}
+.product-vault-transfer {margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.product-vault-count {color:var(--muted);font-size:12px}
+#vault-list .vault-row {gap:10px;overflow-wrap:anywhere}
+#toast {max-width:min(38rem,calc(100vw - 32px));overflow-wrap:anywhere;box-shadow:0 12px 42px #091a2033}
+dialog[open] {overscroll-behavior:contain}
+:where(button,a,input,select,summary):focus-visible {outline:3px solid #58a885;outline-offset:3px}
+@media(max-width:700px){
+  #login.login-shell:not(.hidden) {grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  .product-login-brand {padding:24px}
+  .product-login-brand h2 {margin:12px 0 7px;font-size:34px}
+  .product-login-brand p {margin:0;max-width:none;font-size:14px}
+  #login .login-card {padding:26px 24px 40px;width:min(100%,460px)}
+  #login .product-lang-switch {margin-bottom:16px}
+}
+@media(prefers-reduced-motion:no-preference) {
+  .product-login-brand .product-brand-inner {animation:product-enter .26s ease-out}
+  @keyframes product-enter {from {opacity:0;transform:translateY(6px)} to {opacity:1;transform:none}}
+}

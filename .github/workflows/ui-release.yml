@@ -1,0 +1,67 @@
+name: Publish Pi Control UI
+on:
+  push:
+    branches: [main]
+    paths: [UI_VERSION]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: pi-control-ui-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check and package the interface
+        run: |
+          node --check src/product.js
+          python3 scripts/package-ui.py pi-control-ui.zip
+      - name: Publish the stable release with its update bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(cat UI_VERSION)"
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$ ]]; then
+            echo 'UI_VERSION must contain a stable version such as 1.0.1.'
+            exit 1
+          fi
+          tag="v$version"
+
+          if release="$(gh release view "$tag" --json isDraft,isPrerelease,assets)"; then
+            if jq -e '.isDraft == false and .isPrerelease == false and any(.assets[]; .name == "pi-control-ui.zip")' <<<"$release" >/dev/null; then
+              echo "$tag is already published with an update bundle."
+              exit 0
+            fi
+            echo "$tag already exists as an incomplete or non-stable release. Inspect it before retrying."
+            exit 1
+          fi
+
+          if latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"; then
+            python3 - "$tag" "$latest" <<'PY'
+          import sys
+
+          def parts(tag):
+              return tuple(map(int, tag.removeprefix('v').split('.')))
+
+          if parts(sys.argv[1]) <= parts(sys.argv[2]):
+              sys.exit('UI_VERSION must be newer than the current stable release.')
+          PY
+          fi
+
+          if git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists without a stable release. Inspect it before retrying."
+            exit 1
+          else
+            result=$?
+            if [[ "$result" -ne 2 ]]; then exit "$result"; fi
+          fi
+
+          gh release create "$tag" pi-control-ui.zip \
+            --target "$GITHUB_SHA" --title "Pi Control UI $version" \
+            --notes "Updates the Pi Control interface. Server components are distributed separately." \
+            --generate-notes --latest
