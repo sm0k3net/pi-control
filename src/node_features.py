@@ -2,6 +2,8 @@
 import hashlib
 import hmac
 import http.client
+import ipaddress
+import subprocess
 import json
 import ssl
 import threading
@@ -195,8 +197,68 @@ def copy_file(job, source, destination, credentials, source_path, target_path):
         transfer_progress(job, phase='error', error=message)
 
 
+PRIVATE_RANGES = tuple(ipaddress.IPv4Network(value) for value in
+                       ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16'))
+
+
+def local_cmd(args):
+    result = subprocess.run(args,capture_output=True,text=True,timeout=10,check=True)
+    return json.loads(result.stdout)
+
+
+def lan_prefix(value):
+    try:
+        parsed = ipaddress.IPv4Network(value)
+    except (ValueError,TypeError):
+        return None
+    return parsed if any(parsed.subnet_of(parent) for parent in PRIVATE_RANGES) else None
+
+
+def remote_lans():
+    state = local_cmd(['tailscale','status','--json'])
+    prefs = local_cmd(['tailscale','debug','prefs'])
+    routes = local_cmd(['ip','-j','-4','route','show','table','all'])
+    installed = {row.get('dst') for row in routes if row.get('dev') == 'tailscale0'
+                 and str(row.get('table')) == '52'}
+    connected = [route for row in routes if row.get('scope') == 'link'
+                 and row.get('dev','').startswith(('eth','en','wl'))
+                 if (route := lan_prefix(row.get('dst'))) is not None]
+    nodes = {node['host']:node for node in cluster5.get()}
+    output = []
+    for peer in (state.get('Peer') or {}).values():
+        node = next((nodes[ip] for ip in peer.get('TailscaleIPs',[]) if ip in nodes),None)
+        if not node:
+            continue
+        for raw in peer.get('PrimaryRoutes') or []:
+            if (prefix := lan_prefix(raw)) is None:
+                continue
+            overlap = any(prefix.overlaps(route) for route in connected)
+            output.append({'node':node['name'],'cidr':str(prefix),'online':bool(peer.get('Online')),
+                           'installed':str(prefix) in installed,'overlap':overlap})
+    return {'accept_routes':bool(prefs.get('RouteAll')),'routes':output}
+
+
+def accept_remote_lans(data):
+    enable = data.get('enabled')
+    if not isinstance(enable,bool):
+        raise ValueError('Укажите новое состояние приёма маршрутов.')
+    current = remote_lans()
+    if enable:
+        if not any(row['online'] and not row['overlap'] for row in current['routes']):
+            raise ValueError('Нет одобренных доступных маршрутов к узлам Pi.')
+        if any(row['overlap'] for row in current['routes']):
+            raise ValueError('Маршрут удалённого узла пересекается с локальной сетью.')
+    subprocess.run(['tailscale','set','--accept-routes='+str(enable).lower()],
+                   capture_output=True,timeout=15,check=True)
+    return remote_lans()
+
+
 def action(data):
     op = data.get('op')
+    if op == 'remote-lans':
+        return remote_lans()
+    if op == 'remote-lans-accept':
+        return accept_remote_lans(data)
     if op in ('transfer-start', 'transfer-status'):
         return transfer_action(data)
     if op == 'task':

@@ -109,7 +109,7 @@ For **System → Remote desktops**, set up a noVNC desktop session on the main P
 
 Select **Mac / Apple Screen Sharing** for macOS account credentials. Install `remmina` and `remmina-plugin-vnc` on the main Pi. Update older Mac profiles that use standard VNC. For RDP, save a Windows account or enter it interactively. The first noVNC password unlocks the Pi desktop, which hosts the destination client.
 
-The lightweight node's **Network** page provides Wi-Fi and Bluetooth discovery and manual inventory of common TCP listeners across up to 64 addresses of a directly connected private IPv4 network. Start each discovery run from the panel. The node's **Files → Transfer folder** supports browser upload and download up to 128 GiB per file, subject to available space. The controller can stream a file from one enrolled node's transfer folder to another with progress. Existing files are kept when names collide. Upgrade enrolled nodes via `sudo python3 scripts/install-node.py --upgrade`.
+The lightweight node's **Network** page provides Wi-Fi and Bluetooth discovery and manual inventory of common TCP listeners across up to 254 hosts of a directly connected private IPv4 network. Start each discovery run from the panel. The node's **Files → Transfer folder** supports browser upload and download up to 128 GiB per file, subject to available space. The controller can stream a file from one enrolled node's transfer folder to another with progress. Existing files are kept when names collide. Upgrade enrolled nodes via `sudo python3 scripts/install-node.py --upgrade`.
 
 ### Pi Nodes MCP
 

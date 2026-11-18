@@ -4,6 +4,29 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 ROOTS={'home':Path('/home/sm0k3'),'media':Path('/media'),'mnt':Path('/mnt'),'knowledge':Path('/home/sm0k3/Knowledge')}
 uploads={};lock=threading.Lock();share_guard=threading.Lock();shared={'server':None,'process':None,'url':'','token':'','path':None,'expires':0,'log':None}
+BUILTIN_MCP_NAME = 'MCP — Узлы Pi.md'
+BUILTIN_MCP = '# MCP — Узлы Pi\n\n## Подключение\n\n- Транспорт: Streamable HTTP. Endpoint текущей установки: `https://100.93.172.100:8794/mcp`.\n- Авторизация: HTTP-заголовок `Authorization: Bearer <token>`. Токен хранится на основном Pi в `/etc/pi-node-mcp/token`. Читайте его в административной сессии и передавайте в хранилище секретов своего клиента.\n- Для HTTPS клиенту нужно доверять публичному сертификату `/etc/pi-node-mcp/cert.pem`. Для Node.js можно указать путь к доверенному сертификату через NODE_EXTRA_CA_CERTS. Для Python настройте TLS-контекст клиента или SSL_CERT_FILE.\n- В DeepSeek Harness, Agent Zero или другом MCP-клиенте создайте подключение Streamable HTTP, укажите URL, заголовок авторизации и TLS-доверие. Для проверки вызовите node_list, затем node_health с полученным node_id.\n- Доступ к текущему сервису идёт по Tailscale. Имя сервиса systemd: `pi-node-mcp.service`.\n\n## Инструменты\n\n- node_list — список узлов, явно разрешённых этому экземпляру MCP.\n- node_health — состояние узла, системные показатели и статусы контейнеров.\n- node_links — сетевые интерфейсы, IPv4/IPv6, таблица маршрутов и кэш Wi-Fi.\n- node_inventory — известные соседи и TCP/UDP-порты самого Raspberry Pi.\n- node_bluetooth — список известных Bluetooth-устройств из BlueZ.\n- Все инструменты, кроме node_list, принимают `{"node_id":"<ID>"}`. Доступ предназначен для чтения диагностики.\n\n## Настройка и проверка\n\n1. `sudo systemctl status pi-node-mcp.service` показывает состояние сервиса. `sudo journalctl -u pi-node-mcp.service -n 30` показывает журнал.\n2. 401 означает, что клиенту нужен действующий Bearer-токен. Ошибка сертификата означает, что нужно сверить адрес и добавить публичный сертификат в доверенные.\n3. Если узел отсутствует в node_list, проверьте его подключение в «Узлы Pi» и параметр --node в сервисе. Несколько --node разрешают несколько узлов.\n4. Связь с удалённым узлом использует отдельный диагностический ключ и проверку его TLS-отпечатка. На основном Pi карта узлов хранится в `/etc/pi-node-mcp/peers.json`, на лёгком узле — SHA-256 своего ключа в `/opt/pi-node/mcp-diagnostics.sha256`.\n5. Для разных агентов можно поднять отдельные экземпляры на разных портах с разными токенами и списками узлов. При смене токена обновите настройки клиентов и перезапустите экземпляр MCP.\n6. Локальный транспорт stdio: `python3 /opt/pi-dashboard/pi-node-mcp.py --node <ID> --peer-credentials /etc/pi-node-mcp/peers.json`. Процессу требуется доступ к папке установки и указанному файлу. Для отдельного контейнера используйте HTTPS.\n'
+
+def ensure_builtin_knowledge():
+ base=ROOTS['knowledge']
+ try:
+  if base.is_symlink():return
+  try:
+   base.mkdir()
+  except FileExistsError:
+   pass
+  else:
+   owner(base,base.parent)
+  path=base/BUILTIN_MCP_NAME
+  fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+  with os.fdopen(fd,'w',encoding='utf-8') as file:
+   file.write(BUILTIN_MCP)
+   file.flush()
+   os.fsync(file.fileno())
+  owner(path,base)
+ except (FileExistsError,OSError):
+  pass
+
 def validname(name):
  if not isinstance(name,str) or not name or name in ('.','..') or '/' in name or '\\' in name or '\x00' in name or any(ord(c)<32 for c in name) or len(name.encode())>240:raise ValueError('Недопустимое имя файла.')
  return name
@@ -37,7 +60,9 @@ def owner(p,parent):
   if s.st_uid!=0:os.chown(p,s.st_uid,s.st_gid,follow_symlinks=False)
  except PermissionError:pass
 def items(d):
- root=d.get('root','home');rel=d.get('path','');p=resolve(root,rel)
+ root=d.get('root','home');rel=d.get('path','')
+ if root=='knowledge':ensure_builtin_knowledge()
+ p=resolve(root,rel)
  if not p.is_dir():raise ValueError('Это не папка.')
  try:allitems=list(os.scandir(p))
  except OSError:raise ValueError('Не удалось открыть папку.')

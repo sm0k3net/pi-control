@@ -410,6 +410,50 @@
     };
   }
 
+  const tunnels=document.getElementById('page-tunnels');
+  if(tunnels){
+    const root=makePanel(tunnels,'Локальные сети узлов Pi','Pi node LANs',
+      'Одобренные LAN-маршруты Tailscale. Приём маршрутов включает все разрешённые subnet routes на этом Pi.',
+      'Approved Tailscale LAN routes. The receive switch applies to all allowed subnet routes on this Pi.',
+      tunnels.querySelector('.page-intro'));
+    const rows=node('div'),status=node('p','','maintenance-status');
+    status.setAttribute('role','status');
+    const controls=node('div','','form-actions');
+    const reload=button(label('Обновить','Refresh'));
+    const toggle=button(label('Приём маршрутов','Receive routes'),true);
+    toggle.disabled=true;controls.append(reload,toggle);root.append(controls,status,rows);
+    let info;
+    const render=data=>{
+      info=data;
+      toggle.textContent=data.accept_routes?label('Выключить приём маршрутов','Disable route acceptance'):
+        label('Включить приём маршрутов','Enable route acceptance');
+      toggle.disabled=!data.accept_routes&&!data.routes.some(r=>r.online&&!r.overlap);
+      rows.replaceChildren();
+      if(!data.routes.length)rows.append(node('p',label(
+        'Одобренных маршрутов пока нет. Объявите локальную сеть в лёгкой панели и одобрите её в Tailscale.',
+        'No approved routes yet. Advertise an attached subnet from the node panel and approve it in Tailscale.')));
+      for(const route of data.routes){
+        const line=node('div','','linked-file');
+        const state=route.overlap?label('Пересекается с локальной сетью','Overlaps the local LAN'):
+          !route.online?label('Узел не в сети','Node offline'):
+          route.installed?label('Маршрут установлен','Route installed'):label('Одобрен, приём выключен','Approved, not installed');
+        line.append(node('strong',route.node+' · '+route.cidr),node('span',state));rows.append(line);
+      }
+    };
+    const refresh=async()=>render(await request(nodesPath,{op:'remote-lans'}));
+    reload.onclick=()=>run(reload,status,refresh);
+    toggle.onclick=async()=>{
+      if(!info)return;
+      if(!info.accept_routes&&!confirm(label('Включить на этом Pi приём всех разрешённых маршрутов Tailscale?',
+        'Accept all allowed Tailscale routes on this Pi?')))return;
+      await run(toggle,status,async()=>{
+        render(await request(nodesPath,{op:'remote-lans-accept',enabled:!info.accept_routes}));
+      });
+      if(info)toggle.disabled=!info.accept_routes&&!info.routes.some(r=>r.online&&!r.overlap);
+    };
+    refreshWhenVisible(tunnels,refresh,status);
+  }
+
   const system=document.getElementById('page-system');
   if(system){
     const parent=document.getElementById('desktop-status')?.closest('.panel');
