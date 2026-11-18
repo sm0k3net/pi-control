@@ -100,7 +100,7 @@ class NodeTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         node_features.mcp_snapshot('office','usb',credential)
                 with patch.object(left,'attached_networks',return_value={'192.168.2.0/24':'eth0'}):
-                    for invalid in ('192.168.2.0/24','192.168.3.0/26','100.64.0.0/26'):
+                    for invalid in ('192.168.2.0/23','192.168.3.0/26','100.64.0.0/26'):
                         with self.assertRaises(ValueError):
                             left.port_inventory(invalid)
             finally:
@@ -109,6 +109,25 @@ class NodeTest(unittest.TestCase):
                     server.server_close()
                 for thread in threads:
                     thread.join(timeout=2)
+
+    def test_approved_lans_match_enrolled_nodes_and_flag_overlap(self):
+        status = {'Peer':{'peer':{'TailscaleIPs':['100.100.0.1'],'Online':True,
+                                 'PrimaryRoutes':['192.168.40.0/24','192.168.20.0/24','0.0.0.0/0']},
+                          'other':{'TailscaleIPs':['100.100.0.2'],'PrimaryRoutes':['10.0.0.0/24']}}}
+        routes = [{'dev':'tailscale0','table':52,'dst':'192.168.40.0/24'},
+                  {'dev':'eth0','scope':'link','dst':'192.168.20.0/24'}]
+        with patch.object(node_features.cluster5,'get',return_value=[{'host':'100.100.0.1','name':'office'}]), \
+             patch.object(node_features,'local_cmd',side_effect=[status,{'RouteAll':True},routes]):
+            result = node_features.remote_lans()
+        self.assertEqual(result['routes'],[
+            {'node':'office','cidr':'192.168.40.0/24','online':True,'installed':True,'overlap':False},
+            {'node':'office','cidr':'192.168.20.0/24','online':True,'installed':False,'overlap':True},
+        ])
+        with patch.object(node_features,'remote_lans',return_value=result), \
+             patch.object(node_features.subprocess,'run') as run:
+            with self.assertRaises(ValueError):
+                node_features.accept_remote_lans({'enabled':True})
+            run.assert_not_called()
 
     def test_mcp_scope_hides_other_nodes_and_rejects_unlisted_tools(self):
         mcp=load_module(REPO/'scripts/pi-node-mcp.py','node_mcp')
