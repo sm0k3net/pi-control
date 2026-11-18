@@ -201,7 +201,24 @@ def mac_get(handler):
     if not handler.authenticated():
         return handler.respond(401, {'error':'Войдите в Pi Control перед подключением к Mac.'})
     if path == MAC_PAGE:
-        return handler.respond(200, MAC_HTML.encode(), 'text/html; charset=utf-8')
+        host = handler.headers.get('Host','')
+        if not re.fullmatch(r'[A-Za-z0-9.\-\[\]:]{1,255}', host):
+            return handler.respond(400, {'error':'Некорректный адрес панели.'})
+        body = MAC_HTML.encode()
+        handler.send_response(200)
+        handler.send_header('Content-Type','text/html; charset=utf-8')
+        handler.send_header('Content-Length',str(len(body)))
+        handler.send_header('Cache-Control','no-store')
+        handler.send_header('X-Content-Type-Options','nosniff')
+        handler.send_header('Referrer-Policy','no-referrer')
+        handler.send_header('X-Frame-Options','DENY')
+        handler.send_header('Content-Security-Policy',
+                            "default-src 'self'; script-src 'self'; style-src 'self'; "
+                            f"connect-src 'self' wss://{host}; img-src 'self' data:; "
+                            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+        handler.end_headers()
+        handler.wfile.write(body)
+        return
     if path == MAC_CODE:
         return handler.respond(200, MAC_SCRIPT.encode(), 'application/javascript; charset=utf-8')
     if path in NOVNC_ASSETS:
