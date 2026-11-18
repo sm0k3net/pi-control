@@ -90,6 +90,27 @@ def get_peer(node, password, route):
         return json.loads(payload)
 
 
+def mcp_snapshot(node_id, task, token):
+    if task not in {'host', 'links', 'observed', 'bluetooth'}:
+        raise ValueError('Unsupported diagnostic task.')
+    node = next((item for item in cluster5.get() if item['id'] == node_id), None)
+    if not node:
+        raise ValueError('Enrolled node unavailable.')
+    conn = PinnedConnection(node, 16)
+    try:
+        path = '/api/mcp-diagnostics?' + urlencode({'task':task})
+        conn.request('GET', path, headers={'Authorization':'Bearer '+token})
+        reply = conn.getresponse()
+        if reply.status != 200:
+            raise ValueError('The remote node rejected its diagnostic credential.')
+        data = reply.read(MAX + 1)
+        if len(data) > MAX:
+            raise ValueError('Diagnostic response is too large.')
+        return {'node':node['name'], 'id':node_id, 'time':int(time.time()), 'result':json.loads(data)}
+    finally:
+        conn.close()
+
+
 TRANSFERS = {}
 TRANSFER_GUARD = threading.Lock()
 TRANSFER_LIMIT = 128 * 1024**3

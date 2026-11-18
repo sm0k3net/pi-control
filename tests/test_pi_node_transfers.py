@@ -87,6 +87,18 @@ class NodeTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     with right.share_parent('../config.json'):
                         pass
+                credential = 'd'*64
+                (right.ROOT/'mcp-diagnostics.sha256').write_text(hashlib.sha256(credential.encode()).hexdigest())
+                nodes[1].update(id='office', name='Test node')
+                with patch.object(node_features.cluster5,'addr_ok',return_value=True), \
+                     patch.object(node_features.cluster5,'get',return_value=[nodes[1]]), \
+                     patch.object(right,'diagnostics',return_value={'system':{'ok':True}}):
+                    snapshot = node_features.mcp_snapshot('office','host',credential)
+                    self.assertEqual(snapshot['result']['system'], {'ok':True})
+                    with self.assertRaises(ValueError):
+                        node_features.mcp_snapshot('office','host','a'*64)
+                    with self.assertRaises(ValueError):
+                        node_features.mcp_snapshot('office','usb',credential)
                 with patch.object(left,'attached_networks',return_value={'192.168.2.0/24':'eth0'}):
                     for invalid in ('192.168.2.0/24','192.168.3.0/26','100.64.0.0/26'):
                         with self.assertRaises(ValueError):
