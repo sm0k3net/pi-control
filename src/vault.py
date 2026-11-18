@@ -33,7 +33,7 @@ def create(d):
    try:tmp.unlink()
    except FileNotFoundError:pass
  return {'message':'Хранилище создано.'}
-def entries(k):return [{'id':str(e.uuid),'title':e.title or '', 'username':e.username or '', 'url':e.url or '', 'group':' / '.join(e.path[:-1]) if e.path else ''} for e in k.entries]
+def entries(k):return [{'id':str(e.uuid),'title':e.title or '', 'username':e.username or '', 'url':e.url or '', 'group':' / '.join(e.path[:-1]) if e.path else '', 'group_id':str(e.group.uuid)} for e in k.entries]
 def get_entry(k,id):
  e=next((e for e in k.entries if str(e.uuid)==id),None)
  if e is None:raise ValueError('Запись не найдена.')
@@ -42,15 +42,32 @@ def dispatch(op,d):
  password=str(d.get('master',''))
  with guard:
   k=opened(password)
-  if op=='list':return {'entries':entries(k)}
+  if op=='list':
+   groups = [{'id': str(group.uuid), 'name': ' / '.join(group.path or []) or group.name or 'KeePass'} for group in k.groups]
+   return {'entries': entries(k), 'groups': groups}
+  if op=='group-create':
+   name = str(d.get('name','')).strip()
+   if not name or len(name) > 120:
+    raise ValueError('Укажите название группы до 120 символов.')
+   if any(group.name == name for group in k.root_group.subgroups):
+    raise ValueError('Такая группа уже существует.')
+   group = k.add_group(k.root_group, name)
+   save(k)
+   return {'id': str(group.uuid)}
   if op=='reveal':
-   e=get_entry(k,str(d.get('id','')));return {'title':e.title or '', 'username':e.username or '', 'password':e.password or '', 'url':e.url or '', 'notes':e.notes or ''}
+   e=get_entry(k,str(d.get('id','')));return {'title':e.title or '', 'username':e.username or '', 'password':e.password or '', 'url':e.url or '', 'notes':e.notes or '', 'group_id':str(e.group.uuid)}
   if op=='save':
    title=str(d.get('title','')).strip();username=str(d.get('username',''));secret=str(d.get('password',''));url=str(d.get('url',''));notes=str(d.get('notes',''));id=str(d.get('id',''))
    if not title or len(title)>200 or any(len(v)>12000 for v in (username,secret,url,notes)):raise ValueError('Проверьте название и размеры полей.')
+   group_id = str(d.get('group_id',''))
+   group = next((item for item in k.groups if str(item.uuid) == group_id), None)
+   if group_id and group is None:
+    raise ValueError('Группа не найдена.')
    if id:
     e=get_entry(k,id);e.title=title;e.username=username;e.password=secret;e.url=url;e.notes=notes
-   else:k.add_entry(k.root_group,title,username,secret,url=url,notes=notes)
+    if group is not None and e.group.uuid != group.uuid:
+     k.move_entry(e, group)
+   else:k.add_entry(group if group is not None else k.root_group,title,username,secret,url=url,notes=notes)
    save(k);return {'message':'Запись сохранена.'}
   if op=='delete':
    e=get_entry(k,str(d.get('id','')));k.delete_entry(e);save(k);return {'message':'Запись удалена.'}
