@@ -1,0 +1,16 @@
+[Unit]
+Description=Pi Control local maintenance worker
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/pi-dashboard/maintenance_worker.py
+RuntimeDirectory=pi-control-maintenance
+RuntimeDirectoryMode=0750
+UMask=0077
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

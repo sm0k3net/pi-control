@@ -91,8 +91,16 @@ These checks only validate syntax; they do not test deployment, security, servic
 
 The dashboard provides a Russian/English interface switch and a device-wide default in Settings. Settings → System → Pi Control updates checks the latest stable release in this repository and shows its release notes.
 
-The update button installs the verified UI bundle `pi-control-ui.zip` attached to a newer semver release. The updater verifies GitHub's asset digest before activating the bundle. It updates JavaScript, CSS and the translation catalog. Backend upgrades continue to use the installation procedure. The bundled interface baseline is 1.0.0.
+On managed installations, the update button installs the verified `pi-control-ui.zip` and `pi-control-server.zip` for a newer stable release. The server bundle covers an explicit set of dashboard files. GitHub provides the digests used to verify both bundles.
 
 To release a new interface version, increase `UI_VERSION` and merge that change into `main`. With GitHub Actions enabled, the workflow checks the JavaScript, builds the update bundle, generates release notes and publishes the stable release with its bundle attached. Merges without a version change do not publish. The workflow uses the repository-provided token with `contents: write`.
 
 For KeePass, export a KDBX backup from the unlocked vault. A new installation can restore that file directly. An existing vault can merge entries using its existing import action.
+
+### Managed updates and remote Pi nodes
+
+On a managed installation, open **Settings → System → Pi Control updates**. The server checks for both release ZIPs and validates their SHA-256 digests. An update restarts the panel and USB monitor, checks their health, and recovers the previous managed files and UI on failure. Use **Rollback** to return to the previous installation. Host configuration and user data remain outside the update bundle.
+
+For a new lightweight node run `sudo python3 scripts/install-node.py --check` and then `sudo python3 scripts/install-node.py` from a checkout on that Pi. For an existing node run `sudo python3 scripts/install-node.py --upgrade` from the new checkout. Verify the node's certificate fingerprint in the main panel when enrolling it. In **Pi Nodes → Task templates**, select the node or let the panel pick a reachable enrolled node with a scoped stored secret. The neighbor inventory comes from the Pi's existing neighbor cache. **Files → Remote node USB** lists detected storage and opens it for read-only browsing.
+
+For **System → Remote desktops**, set up a noVNC desktop session on the main Pi and install the distribution's TigerVNC viewer and FreeRDP X11 client (on Debian 13, `tigervnc-viewer` and `freerdp3-x11`). The integration starts the systemd user units `novnc-xvnc`, `novnc-desktop`, and `novnc-websockify` on display `:5`, port `9595`. Set `PI_NOVNC_USER` in the dashboard unit if the desktop belongs to a different user. Add the Tailscale IPv4 of the Mac or Windows PC. Enable [Screen Sharing and VNC access on the Mac](https://support.apple.com/en-us/guide/mac-help/mh11848/mac) or [Remote Desktop on a supported Windows edition](https://support.microsoft.com/en-us/windows/experience/connectivity-networking/how-to-use-remote-desktop). The browser must be able to reach the Pi via Tailscale and the Pi must be allowed to reach the desktop service via the tailnet. Enter credentials when prompted by the viewer.

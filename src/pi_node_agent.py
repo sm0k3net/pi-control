@@ -5,6 +5,9 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import urlsplit,parse_qs
+import base64
+import stat
+from contextlib import contextmanager
 ROOT=Path(os.environ.get('PI_NODE_ROOT','/opt/pi-node'));CFG=json.loads((ROOT/'config.json').read_text());sessions={};attempts=[];guard=threading.Lock()
 def command(args,timeout=6):
  try:
@@ -57,6 +60,140 @@ def list_home(relative):
    t=item.stat();entries.append({'name':item.name,'directory':item.is_dir(),'size':t.st_size,'modified':int(t.st_mtime)})
   except OSError:continue
  return {'path':str(p.relative_to(Path('/home'))).replace('.', '', 1) if p==Path('/home') else str(p.relative_to(Path('/home'))),'items':entries}
+USB_BASE = ROOT / 'usb'
+USB_LOCK = threading.RLock()
+USB_TYPES = {'vfat', 'exfat', 'ntfs', 'ext2', 'ext3', 'ext4'}
+USB_LIMIT = 8 * 1024 * 1024
+
+
+def json_command(args):
+    try:
+        return json.loads(command(args, 5))
+    except ValueError:
+        return {}
+
+
+def usb_devices():
+    rows = json_command(['lsblk', '--tree', '--json', '-o',
+                         'PATH,TYPE,TRAN,UUID,FSTYPE,LABEL,MAJ:MIN']).get('blockdevices', [])
+    devices = {}
+
+    def visit(row, usb):
+        usb = usb or row.get('tran') == 'usb'
+        uuid = row.get('uuid') or ''
+        if (usb and row.get('type') in ('disk', 'part') and row.get('fstype') in USB_TYPES
+                and re.fullmatch(r'[A-Za-z0-9-]{1,80}', uuid)):
+            devices.setdefault(uuid, []).append(row)
+        for child in row.get('children', []):
+            visit(child, usb)
+
+    for row in rows:
+        visit(row, False)
+    return {key: rows[0] for key, rows in devices.items() if len(rows) == 1}
+
+
+def usb_info():
+    return [{'uuid': uuid, 'label': info.get('label') or uuid, 'filesystem': info['fstype']}
+            for uuid, info in usb_devices().items()]
+
+
+def diagnostics(task):
+    if task == 'host':
+        return status()
+    if task == 'links':
+        return {**network_status(), 'wifi': command(['iw', 'dev']).splitlines()[:80],
+                'wifi_networks': command(['nmcli', '-t', '-f', 'IN-USE,SSID,CHAN,SIGNAL,SECURITY',
+                                          'device', 'wifi', 'list', '--rescan', 'no']).splitlines()[:100]}
+    if task == 'observed':
+        neighbors = json_command(['ip', '-j', 'neigh', 'show'])
+        return {'neighbors': [row for row in neighbors if row.get('dev', '').startswith(('eth', 'en', 'wl'))][:250],
+                'local_listeners': command(['ss', '-H', '-lntu']).splitlines()[:150]}
+    if task == 'bluetooth':
+        return {'adapters': command(['bluetoothctl', 'list']).splitlines()[:32],
+                'devices': command(['bluetoothctl', 'devices']).splitlines()[:128]}
+    if task == 'usb':
+        return {'devices': usb_info()}
+    raise ValueError('Unknown task')
+
+
+def mount_usb(uuid):
+    with USB_LOCK:
+        device = usb_devices().get(uuid)
+        if not device:
+            raise ValueError('USB not found')
+        USB_BASE.mkdir(mode=0o700, exist_ok=True)
+        target = USB_BASE / uuid
+        target.mkdir(mode=0o700, exist_ok=True)
+        current = command(['findmnt', '-n', '--mountpoint', str(target), '-o', 'MAJ:MIN'])
+        if current != device['maj:min']:
+            if current:
+                subprocess.run(['umount', str(target)], timeout=6, check=True, capture_output=True)
+            fs = device['fstype']
+            options = 'ro,nosuid,nodev,noexec'
+            if fs in {'ext3', 'ext4'}:
+                options += ',noload'
+            subprocess.run(['mount', '-t', 'ntfs3' if fs == 'ntfs' else fs,
+                            '-o', options, device['path'], str(target)],
+                           timeout=10, check=True, capture_output=True)
+        info = command(['findmnt', '-n', '--mountpoint', str(target), '-o', 'MAJ:MIN,OPTIONS'])
+        fields = info.split()
+        if len(fields) != 2 or fields[0] != device['maj:min'] or 'ro' not in fields[1].split(','):
+            raise ValueError('USB mount verification failed')
+        return target
+
+
+@contextmanager
+def usb_entry(uuid, path, directory):
+    pieces = path.split('/') if path else []
+    if len(path) > 2048 or (not directory and not pieces) or any(piece in ('', '.', '..') or '\x00' in piece for piece in pieces):
+        raise ValueError('Invalid USB path')
+    base = mount_usb(uuid)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    descriptors = [os.open(base, flags | os.O_DIRECTORY)]
+    try:
+        root_device = os.fstat(descriptors[0]).st_dev
+        for i, name in enumerate(pieces):
+            require_dir = directory or i < len(pieces) - 1
+            descriptors.append(os.open(name, flags | (os.O_DIRECTORY if require_dir else 0),
+                                       dir_fd=descriptors[-1]))
+            if os.fstat(descriptors[-1]).st_dev != root_device:
+                raise ValueError('Cross-device paths are unavailable')
+        yield descriptors[-1]
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+def usb_list(uuid, path):
+    items = []
+    with usb_entry(uuid, path, True) as fd:
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if len(items) >= 500:
+                    break
+                try:
+                    entry.name.encode('utf-8')
+                    info = entry.stat(follow_symlinks=False)
+                except (UnicodeError, FileNotFoundError):
+                    continue
+                if stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode):
+                    items.append({'name': entry.name, 'directory': stat.S_ISDIR(info.st_mode),
+                                  'size': info.st_size})
+    return {'path': path, 'items': sorted(items, key=lambda item: (not item['directory'], item['name'].casefold()))}
+
+
+def usb_file(uuid, path):
+    with usb_entry(uuid, path, False) as fd:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > USB_LIMIT:
+            raise ValueError('File too large or unsupported (8 MiB maximum)')
+        with os.fdopen(os.dup(fd), 'rb') as handle:
+            data = handle.read(USB_LIMIT + 1)
+        if len(data) > USB_LIMIT:
+            raise ValueError('File too large')
+    return {'name': path.rsplit('/', 1)[-1], 'base64': base64.b64encode(data).decode('ascii')}
+
+
 def authorised(handler):
  try:
   c=SimpleCookie();c.load(handler.headers.get('Cookie',''));token=c['pi_session'].value
@@ -78,6 +215,17 @@ class Handler(BaseHTTPRequestHandler):
   if self.path=='/api/network':return self.respond(200,network_status())
   if self.path=='/api/tunnels':return self.respond(200,tunnel_status())
   route=urlsplit(self.path)
+  if route.path in ('/api/diagnostics','/api/usb-list','/api/usb-download'):
+   query = {key: values[0] for key, values in parse_qs(route.query).items()}
+   try:
+    if route.path == '/api/diagnostics':
+     result = diagnostics(query.get('task'))
+    else:
+     browse = usb_list if route.path == '/api/usb-list' else usb_file
+     result = browse(query.get('uuid', ''), query.get('path', ''))
+    return self.respond(200, result)
+   except (OSError, ValueError, subprocess.SubprocessError):
+    return self.respond(400, {'error':'Данные недоступны. Проверьте носитель и его файловую систему.'})
   if route.path=='/api/files':
    try:return self.respond(200,list_home(parse_qs(route.query).get('path',[''])[0]))
    except (OSError,ValueError):return self.respond(400,{'error':'Недоступный каталог'})
@@ -122,13 +270,62 @@ class Handler(BaseHTTPRequestHandler):
    except Exception:return self.respond(503,{'message':'Docker unavailable'})
    return self.respond(200 if p.returncode==0 else 409,{'message':'Done' if p.returncode==0 else 'Docker action failed'})
   return self.respond(404,{'error':'Not found'})
-HTML='''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pi Control Node</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head><body><main><header><span>● PI CONTROL / NODE</span><h1>Узел Raspberry Pi<span class="dot">.</span></h1><p>Лёгкая панель удалённого устройства</p></header><section id="login"><h2>Вход</h2><form id="form"><input id="password" type="password" autocomplete="current-password" placeholder="Пароль панели" required><button>Войти</button></form><p id="error" role="alert"></p></section><div id="view" hidden><nav aria-label="Разделы"><button data-tab="overview">Обзор</button><button data-tab="monitor">Мониторинг</button><button data-tab="network">Сеть</button><button data-tab="tunnels">Туннели</button><button data-tab="files">Файлы</button><button data-tab="settings">Настройки</button></nav><section><div class="line"><h2 id="heading">Обзор</h2><button id="refresh" class="secondary">Обновить</button></div><div id="content"></div></section><button id="logout" class="secondary">Выйти</button></div></main></body></html>'''
-CSS='''*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:#f3f7f4;color:#193027;font:15px system-ui}main{max-width:1050px;margin:4vh auto;padding:20px}header span{color:#b81f49;font-size:12px;letter-spacing:.15em;font-weight:700}header .dot{font-size:inherit}h1{font-size:clamp(30px,5vw,46px);margin:12px 0}header p,section p{color:#6e8578}section{background:#fff;border:1px solid #e1ebe4;border-radius:18px;padding:24px;margin:20px 0;box-shadow:0 8px 30px #1c46300c}input,button{font:inherit;border:1px solid #d7e5db;border-radius:9px;padding:10px}input{max-width:100%}button{background:#186441;color:#fff;cursor:pointer}button.secondary,nav button{background:#fff;color:#245841}nav{display:flex;gap:7px;flex-wrap:wrap}nav button.active{background:#186441;color:#fff}.line,.row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.row{border-top:1px solid #edf3ee;padding:12px 0}.metrics{display:flex;gap:12px;flex-wrap:wrap}.metric{background:#f4f9f5;border-radius:10px;padding:15px;flex:1;min-width:140px}.muted{color:#6e8578;font-size:13px}.name{overflow-wrap:anywhere}.error{color:#ad2445}a{color:#186441}'''
-JS='''"use strict";const $=x=>document.querySelector(x);let tab='overview',dir='';const labels={overview:'Обзор',monitor:'Мониторинг',network:'Сеть',tunnels:'Туннели',files:'Файлы',settings:'Настройки'};async function api(url,data){let r=await fetch(url,{method:data?'POST':'GET',headers:data?{'Content-Type':'application/json'}:{},body:data?JSON.stringify(data):undefined,credentials:'same-origin'});let x=await r.json();if(!r.ok)throw Error(x.error||x.message||'Ошибка');return x}function text(tag,value,cls){let e=document.createElement(tag);e.textContent=value;if(cls)e.className=cls;return e}function row(parent,name,value){let r=text('div','','row');r.append(text('span',name,'name'),text('span',String(value),'muted'));parent.append(r)}function metrics(root,s){let box=text('div','','metrics');for(let [a,b] of [['ОЗУ занято',(s.memory_used/1073741824).toFixed(2)+' ГиБ'],['Диск свободен',(s.disk_free/1073741824).toFixed(2)+' ГиБ'],['Нагрузка CPU',Number(s.load).toFixed(2)],['Время работы',Math.floor(s.uptime/3600)+' ч']])box.append(text('div',a+': '+b,'metric'));root.append(box)}async function load(){try{let d=await api('/api/status');$('#login').hidden=true;$('#view').hidden=false;$('#heading').textContent=labels[tab];document.querySelectorAll('[data-tab]').forEach(e=>e.classList.toggle('active',e.dataset.tab===tab));let root=$('#content');root.replaceChildren();if(tab==='overview'||tab==='monitor'){metrics(root,d.system);if(tab==='monitor'){row(root,'ОЗУ всего',(d.system.memory_total/1073741824).toFixed(2)+' ГиБ');row(root,'Диск всего',(d.system.disk_total/1073741824).toFixed(2)+' ГиБ');row(root,'Диск занято',(d.system.disk_used/1073741824).toFixed(2)+' ГиБ');row(root,'Температура',d.system.temperature===null?'нет данных':d.system.temperature+' °C')}else{root.append(text('h3','Контейнеры'));for(let c of d.services){let r=text('div','','row');r.append(text('span',c.name+' · '+c.state,'name'));let b=text('button',c.state==='running'?'Остановить':'Запустить');b.onclick=async()=>{try{await api('/api/action',{service:c.id,action:c.state==='running'?'stop':'start'});load()}catch(e){alert(e.message)}};r.append(b);root.append(r)}if(!d.services.length)root.append(text('p','Контейнеров нет.'))}}else if(tab==='network'){let n=await api('/api/network');root.append(text('h3','Интерфейсы'));for(let i of n.interfaces)row(root,i.name+' · '+i.state,i.addresses.join(', ')||'нет адреса');root.append(text('h3','Маршруты IPv4'));for(let r of n.routes)row(root,r.dst||'default',[r.gateway,r.dev].filter(Boolean).join(' · '));row(root,'Пересылка IPv4',n.forwarding?'включена':'выключена')}else if(tab==='tunnels'){let t=await api('/api/tunnels');root.append(text('p','Состояние Tailscale и объявленных маршрутов. Изменение маршрутов выполняется администратором.'));row(root,'Tailscale',t.available?'доступен':'недоступен');row(root,'Приём маршрутов',t.accept_routes?'включён':'выключен');for(let r of t.advertised_routes)row(root,'Объявленный маршрут',r);if(!t.advertised_routes.length)root.append(text('p','Объявленных маршрутов нет.'))}else if(tab==='files'){let f=await api('/api/files?path='+encodeURIComponent(dir));root.append(text('p','Просмотр и скачивание файлов из /home. Управление и загрузка доступны через основную панель.'));root.append(text('p','/home/'+f.path,'muted'));if(dir){let up=text('button','↑ Выше','secondary');up.onclick=()=>{dir=dir.split('/').slice(0,-1).join('/');load()};root.append(up)}for(let i of f.items){let r=text('div','','row'),name=text('span',(i.directory?'📁 ':'📄 ')+i.name,'name');r.append(name);let path=[dir,i.name].filter(Boolean).join('/');if(i.directory){let b=text('button','Открыть','secondary');b.onclick=()=>{dir=path;load()};r.append(b)}else{let a=text('a','Скачать');a.href='/api/file?path='+encodeURIComponent(path);a.download=i.name;r.append(a)}root.append(r)}}else if(tab==='settings'){root.append(text('p','Облегчённая панель работает с отдельным паролем и HTTPS-сертификатом. Доступны прямые подключения по локальной сети и Tailscale.'));row(root,'Режим','Управляемый узел');row(root,'Порт панели',location.port||'443');row(root,'Безопасность','HTTPS · отдельная сессия');root.append(text('p','Пароль и сетевые параметры панели в этом разделе пока изменить нельзя.','muted'))}}catch(e){if(/Sign in/.test(e.message)){$('#login').hidden=false;$('#view').hidden=true}else{$('#content').replaceChildren(text('p',e.message,'error'))}}}document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;load()});$('#form').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{password:$('#password').value});$('#password').value='';$('#error').textContent='';load()}catch(e){$('#error').textContent=e.message}};$('#refresh').onclick=load;$('#logout').onclick=async()=>{await api('/api/logout',{});location.reload()};load();'''
+HTML='''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pi Control Node</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head><body><main><header><span>● PI CONTROL / NODE</span><h1>Узел Raspberry Pi<span class="dot">.</span></h1><p>Лёгкая панель удалённого устройства</p></header><section id="login"><h2>Вход</h2><form id="form"><input id="password" type="password" autocomplete="current-password" placeholder="Пароль панели" required><button>Войти</button></form><p id="error" role="alert"></p></section><div id="view" hidden><nav aria-label="Разделы"><button data-tab="overview">Обзор</button><button data-tab="monitor">Мониторинг</button><button data-tab="diagnostics">Диагностика</button><button data-tab="network">Сеть</button><button data-tab="tunnels">Туннели</button><button data-tab="files">Файлы</button><button data-tab="settings">Настройки</button></nav><section><div class="line"><h2 id="heading">Обзор</h2><button id="refresh" class="secondary">Обновить</button></div><div id="content"></div></section><button id="logout" class="secondary">Выйти</button></div></main></body></html>'''
+CSS='''*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:#f3f7f4;color:#193027;font:15px system-ui}main{max-width:1050px;margin:4vh auto;padding:20px}header span{color:#b81f49;font-size:12px;letter-spacing:.15em;font-weight:700}header .dot{font-size:inherit}h1{font-size:clamp(30px,5vw,46px);margin:12px 0}header p,section p{color:#6e8578}section{background:#fff;border:1px solid #e1ebe4;border-radius:18px;padding:24px;margin:20px 0;box-shadow:0 8px 30px #1c46300c}input,button{font:inherit;border:1px solid #d7e5db;border-radius:9px;padding:10px}input{max-width:100%}button{background:#186441;color:#fff;cursor:pointer}button.secondary,nav button{background:#fff;color:#245841}nav{display:flex;gap:7px;flex-wrap:wrap}nav button.active{background:#186441;color:#fff}.line,.row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.row{border-top:1px solid #edf3ee;padding:12px 0}.metrics{display:flex;gap:12px;flex-wrap:wrap}.metric{background:#f4f9f5;border-radius:10px;padding:15px;flex:1;min-width:140px}.muted{color:#6e8578;font-size:13px}.name{overflow-wrap:anywhere}.error{color:#ad2445}a{color:#186441}.diagnostic-output{margin-top:1rem}.diagnostic-output pre{overflow:auto;max-height:28rem;background:#f4f9f5;padding:1rem;border-radius:10px}.diagnostic-output button{margin:3px}button:focus-visible,a:focus-visible{outline:3px solid #bc4a6a;outline-offset:2px}'''
+JS='''"use strict";const $=x=>document.querySelector(x);let tab='overview',dir='';const labels={overview:'Обзор',monitor:'Мониторинг',network:'Сеть',diagnostics:'Диагностика и USB',tunnels:'Туннели',files:'Файлы',settings:'Настройки'};async function api(url,data){let r=await fetch(url,{method:data?'POST':'GET',headers:data?{'Content-Type':'application/json'}:{},body:data?JSON.stringify(data):undefined,credentials:'same-origin'});let x=await r.json();if(!r.ok)throw Error(x.error||x.message||'Ошибка');return x}function text(tag,value,cls){let e=document.createElement(tag);e.textContent=value;if(cls)e.className=cls;return e}function row(parent,name,value){let r=text('div','','row');r.append(text('span',name,'name'),text('span',String(value),'muted'));parent.append(r)}function metrics(root,s){let box=text('div','','metrics');for(let [a,b] of [['ОЗУ занято',(s.memory_used/1073741824).toFixed(2)+' ГиБ'],['Диск свободен',(s.disk_free/1073741824).toFixed(2)+' ГиБ'],['Нагрузка CPU',Number(s.load).toFixed(2)],['Время работы',Math.floor(s.uptime/3600)+' ч']])box.append(text('div',a+': '+b,'metric'));root.append(box)}async function load(){try{let d=await api('/api/status');$('#login').hidden=true;$('#view').hidden=false;$('#heading').textContent=labels[tab];document.querySelectorAll('[data-tab]').forEach(e=>e.classList.toggle('active',e.dataset.tab===tab));let root=$('#content');root.replaceChildren();if(tab==='overview'||tab==='monitor'){metrics(root,d.system);if(tab==='monitor'){row(root,'ОЗУ всего',(d.system.memory_total/1073741824).toFixed(2)+' ГиБ');row(root,'Диск всего',(d.system.disk_total/1073741824).toFixed(2)+' ГиБ');row(root,'Диск занято',(d.system.disk_used/1073741824).toFixed(2)+' ГиБ');row(root,'Температура',d.system.temperature===null?'нет данных':d.system.temperature+' °C')}else{root.append(text('h3','Контейнеры'));for(let c of d.services){let r=text('div','','row');r.append(text('span',c.name+' · '+c.state,'name'));let b=text('button',c.state==='running'?'Остановить':'Запустить');b.onclick=async()=>{try{await api('/api/action',{service:c.id,action:c.state==='running'?'stop':'start'});load()}catch(e){alert(e.message)}};r.append(b);root.append(r)}if(!d.services.length)root.append(text('p','Контейнеров нет.'))}}else if(tab==='diagnostics'){diagnosticView(root)}else if(tab==='network'){let n=await api('/api/network');root.append(text('h3','Интерфейсы'));for(let i of n.interfaces)row(root,i.name+' · '+i.state,i.addresses.join(', ')||'нет адреса');root.append(text('h3','Маршруты IPv4'));for(let r of n.routes)row(root,r.dst||'default',[r.gateway,r.dev].filter(Boolean).join(' · '));row(root,'Пересылка IPv4',n.forwarding?'включена':'выключена')}else if(tab==='tunnels'){let t=await api('/api/tunnels');root.append(text('p','Состояние Tailscale и объявленных маршрутов. Изменение маршрутов выполняется администратором.'));row(root,'Tailscale',t.available?'доступен':'недоступен');row(root,'Приём маршрутов',t.accept_routes?'включён':'выключен');for(let r of t.advertised_routes)row(root,'Объявленный маршрут',r);if(!t.advertised_routes.length)root.append(text('p','Объявленных маршрутов нет.'))}else if(tab==='files'){let f=await api('/api/files?path='+encodeURIComponent(dir));root.append(text('p','Просмотр и скачивание файлов из /home. Управление и загрузка доступны через основную панель.'));root.append(text('p','/home/'+f.path,'muted'));if(dir){let up=text('button','↑ Выше','secondary');up.onclick=()=>{dir=dir.split('/').slice(0,-1).join('/');load()};root.append(up)}for(let i of f.items){let r=text('div','','row'),name=text('span',(i.directory?'📁 ':'📄 ')+i.name,'name');r.append(name);let path=[dir,i.name].filter(Boolean).join('/');if(i.directory){let b=text('button','Открыть','secondary');b.onclick=()=>{dir=path;load()};r.append(b)}else{let a=text('a','Скачать');a.href='/api/file?path='+encodeURIComponent(path);a.download=i.name;r.append(a)}root.append(r)}}else if(tab==='settings'){root.append(text('p','Облегчённая панель работает с отдельным паролем и HTTPS-сертификатом. Доступны прямые подключения по локальной сети и Tailscale.'));row(root,'Режим','Управляемый узел');row(root,'Порт панели',location.port||'443');row(root,'Безопасность','HTTPS · отдельная сессия');root.append(text('p','Пароль и сетевые параметры панели в этом разделе пока изменить нельзя.','muted'))}}catch(e){if(/Sign in/.test(e.message)){$('#login').hidden=false;$('#view').hidden=true}else{$('#content').replaceChildren(text('p',e.message,'error'))}}}document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;load()});$('#form').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{password:$('#password').value});$('#password').value='';$('#error').textContent='';load()}catch(e){$('#error').textContent=e.message}};$('#refresh').onclick=load;$('#logout').onclick=async()=>{await api('/api/logout',{});location.reload()};load();
+function diagnosticView(root){
+ const actions=text('div','','metrics'), output=text('div','','diagnostic-output');
+ root.append(actions,output);
+ const templates=[['links','Интерфейсы'],['observed','Известные соседи'],['bluetooth','Bluetooth'],['usb','USB']];
+ for(const [task,label] of templates){
+  const button=text('button',label,'secondary'); actions.append(button);
+  button.onclick=async()=>{
+   button.disabled=true; output.replaceChildren(text('p','Читаем данные…'));
+   try{
+    const data=await api('/api/diagnostics?task='+task);
+    if(task==='usb'){
+     output.replaceChildren(text('p',data.devices.length?'Выберите накопитель для чтения.':'USB не обнаружен.'));
+     for(const item of data.devices){
+      const open=text('button',item.label,'secondary');
+      open.onclick=()=>usbView(output,item,''); output.append(open);
+     }
+    }else output.replaceChildren(text('pre',JSON.stringify(data,null,2)));
+   }catch(e){output.replaceChildren(text('p',e.message,'error'))}
+   finally{button.disabled=false}
+  }
+ }
+}
+async function usbView(root,device,path){
+ const query=name=>'?uuid='+encodeURIComponent(device.uuid)+'&path='+encodeURIComponent(name);
+ try{
+  const data=await api('/api/usb-list'+query(path));
+  root.replaceChildren(text('p',device.label+' / '+path));
+  const back=text('button',path?'↑ Выше':'Накопители','secondary');
+  back.onclick=()=>path?usbView(root,device,path.split('/').slice(0,-1).join('/')):load(); root.append(back);
+  for(const item of data.items){
+   const next=[path,item.name].filter(Boolean).join('/');
+   const line=text('div','','row'),button=text('button',item.directory?'Открыть':'Скачать','secondary');
+   line.append(text('span',item.name,'name'),button);root.append(line);
+   button.disabled=!item.directory && item.size>8388608;
+   button.onclick=async()=>{
+    if(item.directory){usbView(root,device,next);return}
+    button.disabled=true;
+    try{
+     const file=await api('/api/usb-download'+query(next));
+     const blob=new Blob([Uint8Array.from(atob(file.base64),c=>c.charCodeAt(0))]);
+     const url=URL.createObjectURL(blob),a=text('a','');
+     a.href=url;a.download=file.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);
+    }catch(e){line.append(text('small',e.message,'error'))}
+    finally{button.disabled=false}
+   };
+  }
+ }catch(e){root.append(text('p',e.message,'error'))}
+}
+'''
 def private_addresses():
- out=[]
+ out=['127.0.0.1']
  try:rows=json.loads(command(['ip','-j','-4','addr','show']))
- except Exception:return []
+ except Exception:return out
  for r in rows:
   name=r.get('ifname','')
   if not (name.startswith(('eth','en','wl')) or name=='tailscale0'):continue

@@ -1,4 +1,4 @@
-name: Publish Pi Control UI
+name: Publish Pi Control
 on:
   push:
     branches: [main]
@@ -17,10 +17,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Check and package the interface
+      - name: Check and package Pi Control
         run: |
           node --check src/product.js
+          node --check src/maintenance-ui.js
+          python3 -m unittest discover -s tests
+          python3 -m py_compile src/pi_node_agent.py
           python3 scripts/package-ui.py pi-control-ui.zip
+          python3 scripts/package-server.py pi-control-server.zip --version "$(cat UI_VERSION)"
       - name: Publish the stable release with its update bundle
         env:
           GH_TOKEN: ${{ github.token }}
@@ -33,7 +37,7 @@ jobs:
           tag="v$version"
 
           if release="$(gh release view "$tag" --json isDraft,isPrerelease,assets)"; then
-            if jq -e '.isDraft == false and .isPrerelease == false and any(.assets[]; .name == "pi-control-ui.zip")' <<<"$release" >/dev/null; then
+            if jq -e '.isDraft == false and .isPrerelease == false and ([.assets[].name] | contains(["pi-control-ui.zip", "pi-control-server.zip"]))' <<<"$release" >/dev/null; then
               echo "$tag is already published with an update bundle."
               exit 0
             fi
@@ -67,7 +71,7 @@ jobs:
           else
             release_notes=(--notes "Server components are distributed separately.")
           fi
-          gh release create "$tag" pi-control-ui.zip \
-            --target "$GITHUB_SHA" --title "Pi Control UI $version" \
+          gh release create "$tag" pi-control-ui.zip pi-control-server.zip \
+            --target "$GITHUB_SHA" --title "Pi Control $version" \
             "${release_notes[@]}" \
             --generate-notes --latest

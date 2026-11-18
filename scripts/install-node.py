@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Install the lightweight Pi Control node, not the main panel or its Docker stack."""
 import argparse
+import ast
+import fcntl
+import hmac
+import http.client
 import hashlib
 import json
 import os
@@ -8,6 +12,8 @@ import platform
 import secrets
 import shutil
 import socket
+import ssl
+import tempfile
 import subprocess
 import sys
 import time
@@ -123,9 +129,74 @@ def install():
     print('This installer does not install the main dashboard or application stack.')
 
 
+def replace_agent(path, payload):
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as out:
+        staged = Path(out.name)
+        try:
+            os.fchmod(out.fileno(), 0o644)
+            out.write(payload)
+            out.flush()
+            os.fsync(out.fileno())
+            os.replace(staged, path)
+        finally:
+            staged.unlink(missing_ok=True)
+
+
+def restart_node():
+    run(['systemctl', 'restart', 'pi-control-node.service'], timeout=40)
+    run(['systemctl', 'is-active', '--quiet', 'pi-control-node.service'], timeout=15)
+
+
+def verify_node():
+    port = int(json.loads((ROOT / 'config.json').read_text()).get('port', PORT))
+    expected = ssl.PEM_cert_to_DER_cert((ROOT / 'cert.pem').read_text())
+    for _ in range(12):
+        conn = http.client.HTTPSConnection('127.0.0.1', port, timeout=2,
+                                           context=ssl._create_unverified_context())
+        try:
+            conn.connect()
+            if not hmac.compare_digest(conn.sock.getpeercert(binary_form=True), expected):
+                raise RuntimeError('Unexpected TLS certificate during the node health check.')
+            conn.request('GET', '/api/status')
+            if conn.getresponse().status == 401:
+                return
+        except OSError:
+            pass
+        finally:
+            conn.close()
+        time.sleep(1)
+    raise RuntimeError('Node did not start accepting authenticated HTTPS requests.')
+
+
+def upgrade():
+    if os.geteuid() != 0 or not UNIT.is_file():
+        raise RuntimeError('Upgrade requires root and a previously installed node.')
+    new = SOURCE.read_bytes()
+    ast.parse(new)
+    path = ROOT / 'agent.py'
+    with (ROOT / '.upgrade.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if any(not item.is_file() or item.is_symlink() for item in
+               (path, ROOT / 'config.json', ROOT / 'cert.pem', ROOT / 'key.pem')):
+            raise RuntimeError('An installed node file is missing or is a symlink.')
+        backup = path.with_name('agent.previous.py')
+        replace_agent(backup, path.read_bytes())
+        try:
+            replace_agent(path, new)
+            restart_node()
+            verify_node()
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            replace_agent(path, backup.read_bytes())
+            restart_node()
+            raise
+    print('Lightweight node upgraded. Configuration, password and TLS certificate preserved.')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--check', action='store_true', help='Read-only system compatibility report')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--upgrade', action='store_true', help='Upgrade an installed node; restore the old agent on failure')
+    mode.add_argument('--check', action='store_true', help='Read-only system compatibility report')
     args = parser.parse_args()
     if args.check:
         info = report()
@@ -133,9 +204,12 @@ def main():
         print(json.dumps(info, ensure_ascii=False, indent=2))
         return 1 if info['issues'] else 0
     try:
-        install()
+        if args.upgrade:
+            upgrade()
+        else:
+            install()
         return 0
-    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+    except (OSError, ValueError, SyntaxError, RuntimeError, subprocess.SubprocessError) as e:
         print(f'Installation failed: {e}', file=sys.stderr)
         print('If a partial /opt/pi-node or unit was created, inspect it before cleanup or retry.', file=sys.stderr)
         return 1

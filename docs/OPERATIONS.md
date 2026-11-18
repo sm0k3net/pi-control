@@ -29,3 +29,11 @@ The lightweight node's file page is limited to viewing and downloading from `/ho
 ## Tests included in this snapshot
 
 Only basic source syntax checks are documented in the README. There is no packaged integration test suite, dependency lockfile, security assessment, automated installer test or verified restoration drill in this snapshot.
+
+## Server maintenance and USB recovery
+
+The Pi Control maintenance service owns the update and recovery operations. Dashboard requests use a local Unix socket with a fixed command list. Other dashboard features still use the existing root process. Moving those features requires a separate migration.
+
+The managed server package is `pi-control-server.zip`. A release builds it alongside the UI package. The worker checks the official GitHub asset digest, the version, the exact file list and each file hash. Before replacing files it saves a snapshot and a transaction record. If the service restart or health check fails, it restores that snapshot. The next worker startup also recovers an interrupted transaction. The updater manages the files listed in `src/maintenance_bundle.py`. The service unit, worker and machine-specific dashboard entrypoint are installed separately.
+
+USB recovery validates the existing manifest and decrypts the selected files. It writes regular files and directories to a new root-only subdirectory under `/var/lib/pi-control-maintenance/restores`. For PostgreSQL, the result is an SQL dump for review and a later restore. The wizard does not apply a dump or replace live files, and skips links and special files. The age identity exists in a private temporary file during the operation. Review the extracted files before promoting them into a live service.
