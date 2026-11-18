@@ -406,6 +406,26 @@ def discovery(data):
         DISCOVERY_LOCK.release()
 
 
+MCP_TASKS = {'host', 'links', 'observed', 'bluetooth'}
+
+
+def mcp_diagnostic(handler):
+    route = urlsplit(handler.path)
+    task = parse_qs(route.query).get('task', [''])[0]
+    if task not in MCP_TASKS:
+        return handler.respond(404, {'error':'Unknown diagnostic task'})
+    token = handler.headers.get('Authorization', '')
+    if not token.startswith('Bearer ') or len(token) != 71:
+        return handler.respond(401, {'error':'Invalid node credential'})
+    try:
+        expected = (ROOT / 'mcp-diagnostics.sha256').read_text().strip()
+    except OSError:
+        return handler.respond(401, {'error':'Node credential not configured'})
+    if not hmac.compare_digest(hashlib.sha256(token[7:].encode()).hexdigest(), expected):
+        return handler.respond(401, {'error':'Invalid node credential'})
+    return handler.respond(200, diagnostics(task))
+
+
 def authorised(handler):
  try:
   c=SimpleCookie();c.load(handler.headers.get('Cookie',''));token=c['pi_session'].value
@@ -422,6 +442,7 @@ class Handler(BaseHTTPRequestHandler):
   if self.path=='/':return self.respond(200,HTML,'text/html; charset=utf-8')
   if self.path=='/app.js':return self.respond(200,JS,'application/javascript; charset=utf-8')
   if self.path=='/style.css':return self.respond(200,CSS,'text/css; charset=utf-8')
+  if urlsplit(self.path).path=='/api/mcp-diagnostics':return mcp_diagnostic(self)
   if not authorised(self):return self.respond(401,{'error':'Sign in required'})
   if self.path=='/api/status':return self.respond(200,status())
   if self.path=='/api/network':return self.respond(200,network_status())

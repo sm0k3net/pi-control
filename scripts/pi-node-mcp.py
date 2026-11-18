@@ -6,6 +6,7 @@ import http.client
 import ipaddress
 import json
 import os
+import re
 import ssl
 import subprocess
 import sys
@@ -33,9 +34,10 @@ def error(request_id, code, message):
 
 
 class Gateway:
-    def __init__(self, backend, allowed):
+    def __init__(self, backend, allowed, peer_credentials=None):
         self.backend = backend
         self.allowed = frozenset(allowed)
+        self.peer_credentials = peer_credentials or {}
 
     def describe(self):
         return {'serverInfo':{'name':'pi-control-nodes','version':'1.0.0'},
@@ -52,6 +54,8 @@ class Gateway:
         node_id = arguments.get('node_id')
         if set(arguments) != {'node_id'} or not isinstance(node_id, str) or node_id not in self.allowed:
             raise ValueError('This node is outside the MCP allowlist.')
+        if node_id in self.peer_credentials:
+            return self.backend.mcp_snapshot(node_id, TASKS[name], self.peer_credentials[node_id])
         return self.backend.action({'op':'task','task':TASKS[name],'id':node_id})
 
     def handle(self, request):
@@ -168,10 +172,22 @@ def main():
     parser.add_argument('--certificate',type=Path)
     parser.add_argument('--private-key',type=Path)
     parser.add_argument('--token-file',type=Path)
+    parser.add_argument('--peer-credentials',type=Path,help='Private JSON object of node IDs and diagnostic tokens.')
     args = parser.parse_args()
     sys.path.insert(0,str(args.dashboard_root))
     import node_features
-    gateway = Gateway(node_features,args.node)
+    credentials = {}
+    if args.peer_credentials:
+        info = args.peer_credentials.stat()
+        if info.st_mode & 0o077 or info.st_uid != os.geteuid():
+            parser.error('Use a credential file owned by this process user with mode 0600.')
+        credentials = json.loads(args.peer_credentials.read_text())
+        if not isinstance(credentials, dict) or not all(
+            key in args.node and isinstance(value, str) and re.fullmatch('[0-9a-f]{64}',value)
+            for key,value in credentials.items()
+        ):
+            parser.error('Provide diagnostic credentials only for individually allowed nodes.')
+    gateway = Gateway(node_features,args.node,credentials)
     if not args.listen:
         return stdio(gateway)
     if not all((args.certificate,args.private_key,args.token_file)):
