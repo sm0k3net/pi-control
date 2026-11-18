@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 from maintenance_updates import atomic
 
@@ -27,11 +28,12 @@ def status():
     except FileNotFoundError:
         targets = []
     return {'targets': targets, 'viewers': {'vnc': bool(viewer('vnc')),
+                                            'mac': bool(viewer('mac')),
                                             'rdp': bool(viewer('rdp') and terminal())}}
 
 
 def viewer(protocol):
-    names = {'vnc': ('xtigervncviewer', 'tigervncviewer'), 'rdp': ('xfreerdp3', 'xfreerdp')}
+    names = {'mac': ('remmina',), 'vnc': ('xtigervncviewer', 'tigervncviewer'), 'rdp': ('xfreerdp3', 'xfreerdp')}
     return next((path for name in names[protocol] if (path := shutil.which(name))), None)
 
 
@@ -82,12 +84,19 @@ def launch(target):
     # Clearing a stale service also makes reconnect deterministic.
     subprocess.run(['systemctl', *MACHINE, 'stop', name + '.service'],
                    capture_output=True, timeout=10)
+    username = target.get('username') or ''
     if target['protocol'] == 'vnc':
         args = [binary, ip + '::5900']
+    elif target['protocol'] == 'mac':
+        user = quote(username, safe='') + '@' if username else ''
+        args = [binary, '-c', f'vnc://{user}{ip}:5900']
+    elif username:
+        args = rdp_terminal + [binary, '/v:' + ip, '/u:' + username, '/dynamic-resolution']
     else:
-        args = rdp_terminal + [binary, '/v:' + ip, '/dynamic-resolution']
-        if target['username']:
-            args.append('/u:' + target['username'])
+        script = ("""printf '%s' 'Windows username (DOMAIN\\user or user@example.com): '; """
+                  'IFS= read -r login && [ -n "$login" ] && '
+                  'exec "$1" "/v:$2" "/u:$login" /dynamic-resolution')
+        args = rdp_terminal + ['/bin/sh', '-c', script, 'rdp-login', binary, ip]
     execute(['systemd-run', *MACHINE, '--collect', '--unit=' + name,
              '--setenv=DISPLAY=:5', *args])
     return {'address': str(address), 'port': 9595}
@@ -97,19 +106,28 @@ def action(data):
     op = data.get('op')
     with LOCK:
         targets = status()['targets']
-        if op == 'add':
+        if op in ('add', 'edit'):
             label = str(data.get('name', '')).strip()
             ip = ipaddress.ip_address(str(data.get('address', '')).strip())
             protocol = data.get('protocol')
             username = str(data.get('username', '')).strip()
-            if not label or len(label) > 80 or ip not in TAILNET or protocol not in ('vnc', 'rdp'):
+            if not label or len(label) > 80 or ip not in TAILNET or protocol not in ('mac', 'vnc', 'rdp'):
                 raise ValueError('Укажите название, протокол и IPv4 Tailscale.')
             if len(username) > 128 or re.search(r'[\x00-\x1f]', username):
                 raise ValueError('Некорректное имя пользователя.')
-            if len(targets) >= 30:
+            target_id = uuid.uuid4().hex
+            if op == 'edit':
+                target_id = data.get('id')
+                if not any(item['id'] == target_id for item in targets):
+                    raise ValueError('Рабочий стол не найден.')
+            elif len(targets) >= 30:
                 raise ValueError('Можно сохранить до 30 рабочих столов.')
-            targets.append({'id': uuid.uuid4().hex, 'name': label, 'address': str(ip),
-                            'protocol': protocol, 'username': username if protocol == 'rdp' else ''})
+            target = {'id': target_id, 'name': label, 'address': str(ip),
+                      'protocol': protocol, 'username': username if protocol != 'vnc' else ''}
+            if op == 'edit':
+                targets = [target if item['id'] == target_id else item for item in targets]
+            else:
+                targets.append(target)
         else:
             target = next((item for item in targets if item['id'] == data.get('id')), None)
             if not target:
