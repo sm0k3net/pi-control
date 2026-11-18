@@ -366,21 +366,68 @@
       .observe(files,{attributes:true,attributeFilter:['class']});
   }
 
+  if(files){
+    const root=makePanel(files,'Передача между узлами','Node-to-node transfer',
+      'Скопируйте файл между папками обмена. Данные передаются потоком через основной Pi.',
+      'Copy a file between node transfer folders. Data streams through the controller.');
+    const [source,refreshSource]=selectNodes(),[destination,refreshDestination]=selectNodes();
+    const from=node('input'),to=node('input'),fromPass=passwordField(),toPass=passwordField();
+    from.placeholder=to.placeholder='folder/file';
+    const grid=node('div','','maintenance-grid'),status=node('p','','maintenance-status');
+    status.setAttribute('role','status');
+    const progress=node('progress');progress.max=100;progress.hidden=true;
+    progress.setAttribute('aria-label',label('Прогресс передачи','Transfer progress'));
+    const start=button(label('Начать передачу','Start transfer'),true);
+    grid.append(field(label('Исходный узел','Source node'),source),field(label('Файл в папке обмена','Source share path'),from),
+      field(label('Пароль исходного узла','Source password'),fromPass),
+      field(label('Целевой узел','Destination node'),destination),field(label('Целевой путь','Destination path'),to),
+      field(label('Пароль целевого узла','Destination password'),toPass));
+    root.append(grid,start,progress,status);
+    refreshWhenVisible(files,()=>Promise.all([refreshSource(),refreshDestination()]),status);
+    start.onclick=async()=>{
+      start.disabled=true;progress.hidden=false;progress.removeAttribute('value');
+      status.textContent=label('Подключаемся к узлам…','Connecting to nodes…');
+      try{
+        const payload={op:'transfer-start',source:source.value,destination:destination.value,
+          source_path:from.value,target_path:to.value,source_password:fromPass.value,
+          destination_password:toPass.value,master:typeof vaultMaster==='string'?vaultMaster:''};
+        fromPass.value=toPass.value='';
+        const {job}=await request(nodesPath,payload);
+        while(true){
+          await new Promise(resolve=>setTimeout(resolve,1200));
+          const result=await request(nodesPath,{op:'transfer-status',job});
+          if(result.total)progress.value=Math.floor(result.bytes*100/result.total);
+          status.textContent=result.bytes.toLocaleString()+' '+label('байт','bytes');
+          if(result.phase==='error')throw new Error(result.error);
+          if(result.phase==='complete'){
+            progress.value=100;
+            status.textContent=label('Файл передан.','Transfer complete.');
+            break;
+          }
+        }
+      }catch(error){status.textContent=error.message;progress.hidden=true;}
+      finally{start.disabled=false;}
+    };
+  }
+
   const system=document.getElementById('page-system');
   if(system){
     const parent=document.getElementById('desktop-status')?.closest('.panel');
     const root=makePanel(system,'Удалённые рабочие столы','Remote desktops',
-      'Подключайтесь к Mac по VNC и Windows по RDP через Tailscale. Пароли вводятся в сеансе noVNC.',
-      'Reach Mac over VNC and Windows over RDP via Tailscale. Enter passwords inside the noVNC session.',parent);
+      'Подключайтесь к Mac по VNC и Windows по RDP через Tailscale. Первый пароль открывает рабочий стол Pi. Затем в клиенте введите данные удалённой системы.',
+      'Reach Mac over VNC and Windows over RDP via Tailscale. First unlock the Pi desktop. Then enter the remote system credentials in its client.',parent);
     const add=node('details','','linked-result');
     add.append(node('summary',label('Добавить устройство','Add a device')));
     const form=node('form','','linked-form'),grid=node('div','','maintenance-grid');
     const protocol=node('select');
-    protocol.add(new Option('Mac / VNC','vnc'));protocol.add(new Option('Windows / RDP','rdp'));
+    protocol.add(new Option('Mac / Apple Screen Sharing','mac'));
+    protocol.add(new Option('Windows / RDP','rdp'));
+    protocol.add(new Option(label('Обычный VNC (пароль)','Standard VNC (password)'),'vnc'));
     const name=node('input'),address=node('input'),username=node('input');
     name.required=true;name.maxLength=80;address.required=true;address.placeholder='100.x.x.x';username.maxLength=128;
-    const user=field(label('Пользователь Windows (необязательно)','Windows user (optional)'),username);
-    user.hidden=true;protocol.onchange=()=>{user.hidden=protocol.value!=='rdp';};
+    const user=field(label('Имя пользователя (необязательно)','Username (optional)'),username);
+    protocol.onchange=()=>{user.hidden=protocol.value==='vnc';};
+    let editing='';
     grid.append(field(label('Название','Name'),name),field(label('IPv4 Tailscale','Tailscale IPv4'),address),
       field(label('Протокол','Protocol'),protocol),user);
     const save=button(label('Сохранить','Save'),true);save.type='submit';
@@ -392,11 +439,17 @@
       if(!data.targets.length)listing.append(node('p',label('Рабочих столов пока нет.','No desktops saved.')));
       for(const target of data.targets){
         const item=node('div','','linked-file'),detail=node('div'),actions=node('div','','form-actions');
-        detail.append(node('strong',target.name),node('p',target.protocol.toUpperCase()+' · '+target.address));
+        detail.append(node('strong',target.name),node('p',target.protocol.toUpperCase()+' · '+target.address+(target.username?' · '+target.username:'')));
         const open=button(label('Подключиться','Connect'),true),remove=button(label('Удалить','Remove'));
         open.disabled=!data.viewers[target.protocol];
         if(open.disabled)open.title=label('Клиент не установлен на Pi','Viewer not installed on the Pi');
-        actions.append(open,remove);item.append(detail,actions);listing.append(item);
+        const edit=button(label('Изменить','Edit'));
+        edit.onclick=()=>{
+          editing=target.id;name.value=target.name;address.value=target.address;
+          protocol.value=target.protocol;username.value=target.username||'';protocol.onchange();
+          add.open=true;name.focus();
+        };
+        actions.append(open,edit,remove);item.append(detail,actions);listing.append(item);
         open.onclick=()=>{
           const tab=window.open('about:blank','_blank');
           if(tab)tab.opener=null;
@@ -419,9 +472,9 @@
     form.onsubmit=event=>{
       event.preventDefault();
       run(save,status,async()=>{
-        render(await request(desktopPath,{op:'add',name:name.value,address:address.value,
+        render(await request(desktopPath,{op:editing?'edit':'add',id:editing,name:name.value,address:address.value,
           protocol:protocol.value,username:username.value}));
-        form.reset();user.hidden=true;add.open=false;
+        form.reset();editing='';protocol.onchange();add.open=false;
       });
     };
     refreshWhenVisible(system,async()=>render(await request(desktopPath)),status);
