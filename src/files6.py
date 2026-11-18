@@ -395,8 +395,46 @@ def telegram(d):
  except Exception:raise ValueError('Не удалось отправить файл в Telegram.')
  finally:conn.close()
  return {'message':'Файл отправлен в настроенный чат Telegram.'}
+def search_knowledge(d):
+ query=d.get('query','')
+ if not isinstance(query,str) or not 2<=len(query.strip())<=160:
+  raise ValueError('Введите от 2 до 160 символов.')
+ ensure_builtin_knowledge()
+ base=resolve('knowledge')
+ terms=query.strip().casefold().split()
+ matches=[];checked=0;visited=0;budget=8*1024**2;partial=False
+ for parent,dirs,files in os.walk(base,followlinks=False):
+  relative=Path(parent).relative_to(base)
+  dirs[:]=sorted(x for x in dirs if not x.startswith('.') and len(relative.parts)<10)
+  visited+=1
+  if visited>250 or checked>=400 or budget<0:
+   partial=True;break
+  for name in sorted(files):
+   if checked>=400 or budget<0 or len(matches)>=40:
+    partial=True;break
+   if name.startswith('.') or Path(name).suffix.lower() not in ('.md','.markdown','.txt'):
+    continue
+   path=Path(parent)/name
+   rel=(relative/name).as_posix()
+   try:
+    path=resolve('knowledge',rel)
+    metadata=path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size>128*1024:continue
+    with path.open(encoding='utf-8') as file:
+     content=file.read(128*1024+1)
+   except (OSError,UnicodeError,ValueError):
+    continue
+   checked+=1;budget-=metadata.st_size
+   haystack=rel.casefold()+' '+content.casefold()
+   if all(term in haystack for term in terms):
+    snippet=next((line.strip() for line in content.splitlines() if any(
+                  term in line.casefold() for term in terms)),'')
+    matches.append({'path':rel,'snippet':snippet[:250]})
+  if len(matches)>=40:break
+ return {'items':matches,'checked':checked,'partial':partial}
+
 def dispatch(op,d):
- f={'list':items,'mkdir':make_dir,'touch':make_file,'chmod':chmod_item,'rename':rename,'transfer':transfer,'delete':delete,'read':read_text,'write':write_text,'upload-begin':upload_begin,'upload-end':upload_end,'upload-cancel':upload_cancel,'zip':zip_create,'extract':extract,'share-start':public_start,'share-stop':lambda x:public_stop(),'share-status':lambda x:public_status(),'telegram':telegram}.get(op)
+ f={'knowledge-search':search_knowledge,'list':items,'mkdir':make_dir,'touch':make_file,'chmod':chmod_item,'rename':rename,'transfer':transfer,'delete':delete,'read':read_text,'write':write_text,'upload-begin':upload_begin,'upload-end':upload_end,'upload-cancel':upload_cancel,'zip':zip_create,'extract':extract,'share-start':public_start,'share-stop':lambda x:public_stop(),'share-status':lambda x:public_status(),'telegram':telegram}.get(op)
  if not f:raise ValueError('Неизвестная операция.')
  if op=='share-start':
   with share_guard:return f(d)
