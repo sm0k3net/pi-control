@@ -1,5 +1,9 @@
 'use strict';
-(() => {
+function piUiReady(init){
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});
+  else init();
+}
+piUiReady(() => {
   const element = (tag,text,cls) => {
     const item = document.createElement(tag);
     if (text) item.textContent = text;
@@ -187,9 +191,9 @@
   };
   new MutationObserver(refresh).observe(settings,{attributes:true,attributeFilter:['class']});
   setInterval(refresh,4500);
-})();
+});
 
-(() => {
+piUiReady(() => {
   const lang = () => document.documentElement.lang === 'en';
   const label = (ru,en) => lang() ? en : ru;
   const node = (tag,value='',cls='') => {
@@ -494,12 +498,12 @@
           add.open=true;name.focus();
         };
         actions.append(open,edit,remove);item.append(detail,actions);listing.append(item);
-        open.onclick=()=>{
+        function openDesktop(control,legacy=false){
           const tab=window.open('about:blank','_blank');
           if(tab)tab.opener=null;
-          run(open,status,async()=>{
+          run(control,status,async()=>{
             try{
-              const result=await request(desktopPath,{op:'open',id:target.id});
+              const result=await request(desktopPath,{op:'open',id:target.id,legacy});
               const url=result.url?new URL(result.url,location.origin):new URL('http://'+result.address);
               if(!result.url){
                 url.port=result.port;url.pathname='/vnc.html';url.search='?autoconnect=true&resize=scale';
@@ -511,7 +515,14 @@
               }
             }catch(error){tab?.close();throw error;}
           });
-        };
+         }
+        open.onclick=()=>openDesktop(open);
+        if(target.protocol==='mac'){
+          const fallback=button(label('Обычный режим','Standard fallback'));
+          fallback.disabled=open.disabled;
+          fallback.onclick=()=>openDesktop(fallback,true);
+          actions.insertBefore(fallback,remove);
+        }
         remove.onclick=()=>run(remove,status,async()=>render(await request(desktopPath,{op:'remove',id:target.id})));
       }
     }
@@ -525,9 +536,9 @@
     };
     refreshWhenVisible(system,async()=>render(await request(desktopPath)),status);
   }
-})();
+});
 
-(() => {
+piUiReady(() => {
   const find = id => document.getElementById(id);
   const el = (tag, text='', cls='') => {
     const item = document.createElement(tag);
@@ -827,9 +838,9 @@
   if(typeof ResizeObserver!=='undefined')new ResizeObserver(()=>{if(selected)fit(selected);}).observe(stage);
   new MutationObserver(()=>{if(selected)fit(selected);}).observe(page,{attributes:true,attributeFilter:['class']});
   showSecret();render();
-})();
+});
 
-(() => {
+piUiReady(() => {
   const app=document.getElementById('app'), page=document.getElementById('page-vault');
   const vaultState=document.getElementById('vault-state');
   if(!app||!page||!vaultState||typeof vaultCall!=='function')return;
@@ -844,11 +855,63 @@
   };
   const active=()=>!app.classList.contains('hidden');
   const key='pi-vault-widget';
-  const preference=make('label','','vault-widget-preference');
+  page.classList.add('vault-workspace-v2');
+  const toolbar=make('section','','panel vault-workspace-bar');
+  const description=make('div');
+  description.append(make('strong',t('Хранилище KDBX','KDBX vault')),
+    make('small',t('Пароли, логины и доступ сервисов','Passwords, usernames and service access')));
+  const preference=make('button','','button secondary vault-widget-preference');
+  preference.type='button';
   const toggle=make('input');toggle.type='checkbox';
   toggle.checked=localStorage.getItem(key)==='1';
-  preference.append(toggle,make('span',t('Плавающий виджет паролей','Floating password widget')));
-  vaultState.after(preference);
+  toggle.hidden=true;
+  toolbar.append(description,preference,toggle);
+  const intro=page.querySelector('.page-intro');
+  if(intro)intro.after(toolbar);
+  else page.prepend(toolbar);
+  const secretView=make('section','','panel vault-service-view');
+  secretView.hidden=true;
+  const nav=make('div','','vault-workspace-nav');
+  const passwords=button(t('Записи KDBX','KDBX entries'));
+  const services=button(t('Сервисные секреты','Service secrets'));
+  nav.append(passwords,services);toolbar.after(nav,secretView);
+  const serviceHeading=make('h2',t('Сервисные секреты','Service secrets'));
+  const serviceDescription=make('p',t('Разрешения и привязки продолжают работать при закрытом KDBX.',
+    'Service grants and bindings stay active when KDBX is locked.'),'fine-print');
+  const serviceRows=make('div');
+  secretView.append(serviceHeading,serviceDescription,serviceRows);
+  let view='entries';
+  function switchView(value){
+    view=value;
+    secretView.hidden=value!=='services';
+    for(const element of page.children){
+      if([intro,toolbar,nav,secretView].includes(element))continue;
+      element.classList.toggle('vault-view-hidden',value==='services');
+    }
+    passwords.setAttribute('aria-pressed',String(value==='entries'));
+    services.setAttribute('aria-pressed',String(value==='services'));
+    if(value==='services')loadServiceCatalog();
+  }
+  passwords.onclick=()=>switchView('entries');
+  services.onclick=()=>switchView('services');
+  async function loadServiceCatalog(){
+    serviceRows.replaceChildren(make('p',t('Загружаем…','Loading…')));
+    try{
+      const data=await api('/api/platform/vault-tools');
+      serviceRows.replaceChildren();
+      if(!data.entries.length)serviceRows.append(make('p',t('Сервисных секретов пока нет. Создайте секрет из записи в KDBX.',
+        'No service secrets yet. Create one from a KDBX entry.')));
+      const scopes={nodes:t('Узлы Pi','Pi nodes'),ssh:'SSH',ai:t('ИИ-сервисы','AI services')};
+      for(const item of data.entries){
+        const row=make('div','','vault-service-row'),left=make('div'),right=make('div','','vault-scope-list');
+        left.append(make('strong',item.title),make('small',[item.username,...(item.nodes||[])].filter(Boolean).join(' · ')));
+        for(const scope of item.scopes)right.append(make('span',scopes[scope]||scope));
+        row.append(left,right);serviceRows.append(row);
+      }
+    }catch(error){serviceRows.replaceChildren(make('p',error.message));}
+  }
+  passwords.setAttribute('aria-pressed','true');
+  services.setAttribute('aria-pressed','false');
   const launcher=button(t('Пароли','Passwords'),'vault-launcher');
   launcher.setAttribute('aria-controls','pi-vault-widget');launcher.setAttribute('aria-expanded','false');
   const widget=make('section','','panel vault-widget');widget.id='pi-vault-widget';
@@ -865,6 +928,9 @@
   function isUnlocked(){return typeof vaultMaster==='string'&&!!vaultMaster;}
   function visibility(){
     launcher.hidden=!toggle.checked||!active();
+    preference.textContent=toggle.checked?t('Выключить виджет паролей','Disable password widget'):
+      t('Включить виджет паролей','Enable password widget');
+    preference.setAttribute('aria-pressed',String(toggle.checked));
     if(launcher.hidden)hide(false);
   }
   function hide(focus=true){
@@ -876,7 +942,7 @@
   function setEnabled(value){
     toggle.checked=value;localStorage.setItem(key,value?'1':'0');visibility();
   }
-  toggle.onchange=()=>setEnabled(toggle.checked);
+  preference.onclick=()=>setEnabled(!toggle.checked);
   window.addEventListener('storage',event=>{
     if(event.key===key){toggle.checked=event.newValue==='1';visibility();}
   });
@@ -973,6 +1039,29 @@
     }
     search.oninput=render;render();
   }
+  let latestEntries=[];
+  const beforeVaultCall=vaultCall;
+  vaultCall=async function(op,data){
+    const result=await beforeVaultCall(op,data);
+    if(op==='list'&&Array.isArray(result.entries))latestEntries=result.entries;
+    return result;
+  };
+  const beforeVaultEntries=vaultEntries;
+  vaultEntries=async function(...args){
+    await beforeVaultEntries(...args);
+    const rows=document.querySelectorAll('#vault-list .vault-row');
+    if(rows.length!==latestEntries.length)return;
+    rows.forEach((row,index)=>{
+      const item=latestEntries[index];
+      if(!item||row.querySelector('strong')?.textContent!==item.title)return;
+      const actions=row.querySelector('.vault-actions');
+      if(!actions||actions.querySelector('.vault-convert'))return;
+      const use=button(t('Секрет','Make secret'),'button secondary small-btn vault-convert');
+      use.title=t('Создать сервисный секрет из этой записи','Create a service secret from this entry');
+      use.onclick=()=>serviceDialog(item.id,item.title);
+      actions.append(use);
+    });
+  };
   const editorId=document.getElementById('vault-id');
   const editorTitle=document.getElementById('vault-title');
   const save=document.getElementById('vault-save');
@@ -1027,9 +1116,10 @@
           entry,master:vaultMaster,node:select.value,scopes:[...scopes].filter(([,option])=>option.checked).map(([id])=>id)
         })});
         status.textContent=result.message;
+        if(view==='services')loadServiceCatalog();
       }catch(error){status.textContent=error.message;}
       finally{done.disabled=false;}
     };
   }
   visibility();
-})();
+});
