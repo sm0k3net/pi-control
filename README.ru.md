@@ -113,3 +113,5 @@ python3 /opt/pi-dashboard/pi-node-mcp.py --node <enrolled-node-id>
 Для прямого Apple Screen Sharing установите на основном Pi проверенные файлы noVNC командой `sudo python3 scripts/install-novnc-client.py` и перезапустите `pi-dashboard.service`. Выберите профиль **Mac / Apple Screen Sharing**. Браузеру требуется доверенный HTTPS-сертификат Pi Control. Mac должен принимать подключения Screen Sharing по TCP 5900 через Tailscale. Сеанс использует однократное приглашение из авторизованной панели.
 
 В базе знаний переключатель **Искать во всей базе** ищет по вложенным папкам и содержимому Markdown и текстовых заметок. В терминале каждая вкладка сохраняет историю своей сессии до её закрытия.
+
+См. [план защиты данных на SD-карте](docs/SD-PROTECTION.md) и контрольный список восстановления.

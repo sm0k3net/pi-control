@@ -828,3 +828,208 @@
   new MutationObserver(()=>{if(selected)fit(selected);}).observe(page,{attributes:true,attributeFilter:['class']});
   showSecret();render();
 })();
+
+(() => {
+  const app=document.getElementById('app'), page=document.getElementById('page-vault');
+  const vaultState=document.getElementById('vault-state');
+  if(!app||!page||!vaultState||typeof vaultCall!=='function')return;
+  const en=()=>document.documentElement.lang==='en';
+  const t=(ru,eng)=>en()?eng:ru;
+  const make=(tag,value='',cls='')=>{
+    const el=document.createElement(tag);
+    el.textContent=value;if(cls)el.className=cls;return el;
+  };
+  const button=(text,cls='button secondary')=>{
+    const el=make('button',text,cls);el.type='button';return el;
+  };
+  const active=()=>!app.classList.contains('hidden');
+  const key='pi-vault-widget';
+  const preference=make('label','','vault-widget-preference');
+  const toggle=make('input');toggle.type='checkbox';
+  toggle.checked=localStorage.getItem(key)==='1';
+  preference.append(toggle,make('span',t('Плавающий виджет паролей','Floating password widget')));
+  vaultState.after(preference);
+  const launcher=button(t('Пароли','Passwords'),'vault-launcher');
+  launcher.setAttribute('aria-controls','pi-vault-widget');launcher.setAttribute('aria-expanded','false');
+  const widget=make('section','','panel vault-widget');widget.id='pi-vault-widget';
+  widget.setAttribute('aria-label',t('Быстрый доступ к паролям','Password quick access'));
+  const head=make('header'),close=button('×','vault-widget-close');
+  close.setAttribute('aria-label',t('Свернуть','Collapse'));
+  head.append(make('strong',t('Пароли и секреты','Passwords and secrets')),close);
+  const pane=make('div'),feedback=make('p','','fine-print');
+  feedback.setAttribute('role','status');
+  widget.append(head,pane,feedback);
+  document.body.append(widget,launcher);
+  widget.hidden=true;
+  let generation=0,records=[],shownMaster=null;
+  function isUnlocked(){return typeof vaultMaster==='string'&&!!vaultMaster;}
+  function visibility(){
+    launcher.hidden=!toggle.checked||!active();
+    if(launcher.hidden)hide(false);
+  }
+  function hide(focus=true){
+    const open=!widget.hidden;
+    ++generation;records=[];shownMaster=null;pane.replaceChildren();feedback.textContent='';
+    widget.hidden=true;launcher.setAttribute('aria-expanded','false');
+    if(open&&focus&&!launcher.hidden)launcher.focus();
+  }
+  function setEnabled(value){
+    toggle.checked=value;localStorage.setItem(key,value?'1':'0');visibility();
+  }
+  toggle.onchange=()=>setEnabled(toggle.checked);
+  window.addEventListener('storage',event=>{
+    if(event.key===key){toggle.checked=event.newValue==='1';visibility();}
+  });
+  close.onclick=()=>hide();
+  launcher.onclick=()=>{widget.hidden?open():hide();};
+  widget.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();hide();}});
+  const originalLock=lockVault;
+  lockVault=function(...args){
+    originalLock(...args);
+    const wasOpen=!widget.hidden;
+    ++generation;records=[];shownMaster=null;pane.replaceChildren();feedback.textContent='';
+    if(wasOpen&&active())locked();
+  };
+  document.getElementById('vault-lock').onclick=()=>lockVault();
+  new MutationObserver(visibility).observe(app,{attributes:true,attributeFilter:['class']});
+  function locked(){
+    pane.replaceChildren();
+    const form=make('form','','vault-widget-unlock'),label=make('label',t('Мастер-пароль KDBX','KDBX master password'));
+    const password=make('input');password.type='password';password.autocomplete='off';password.required=true;
+    const submit=make('button',t('Открыть хранилище','Unlock vault'),'button primary');
+    label.append(password);form.append(label,submit);pane.append(form);
+    form.onsubmit=async event=>{
+      event.preventDefault();const value=password.value;password.value='';submit.disabled=true;
+      const request=++generation;
+      try{
+        const result=await api('/api/vault/list',{method:'POST',body:JSON.stringify({master:value})});
+        if(request!==generation||widget.hidden||!active())return;
+        vaultMaster=value;vaultTouch();
+        const editor=document.getElementById('vault-unlocked');
+        editor?.classList.remove('hidden');vaultState.textContent=t('Открыто','Unlocked');
+        records=result.entries;shownMaster=value;renderList();
+        vaultEntries().catch(()=>{});
+      }catch(error){if(request===generation)feedback.textContent=error.message;}
+      finally{submit.disabled=false;}
+    };
+  }
+  async function open(){
+    widget.hidden=false;launcher.setAttribute('aria-expanded','true');feedback.textContent='';
+    if(!isUnlocked()){locked();pane.querySelector('input')?.focus();return;}
+    const mine=++generation, master=vaultMaster;
+    pane.replaceChildren(make('p',t('Читаем записи…','Loading entries…')));
+    try{
+      const result=await vaultCall('list');
+      if(mine!==generation||vaultMaster!==master||widget.hidden)return;
+      records=result.entries;shownMaster=master;renderList();
+      pane.querySelector('input')?.focus();
+    }catch(error){if(mine===generation)feedback.textContent=error.message;}
+  }
+  function copy(value,label){
+    feedback.textContent='';
+    if(!window.isSecureContext||!navigator.clipboard){
+      feedback.textContent=t('Буфер обмена требует доверенного HTTPS.','Clipboard requires trusted HTTPS.');return;
+    }
+    const master=vaultMaster;
+    let clipboard;
+    if(typeof value==='function'){
+      const pending=value().then(text=>{
+        if(vaultMaster!==master||!text)throw Error(t('Хранилище закрыто или поле пустое.','Vault locked or field empty.'));
+        return text;
+      });
+      pending.catch(()=>{});
+      clipboard=window.ClipboardItem&&navigator.clipboard.write
+        ?navigator.clipboard.write([new ClipboardItem({'text/plain':pending.then(text=>new Blob([text],{type:'text/plain'}))})])
+        :pending.then(text=>navigator.clipboard.writeText(text));
+    }else clipboard=navigator.clipboard.writeText(value);
+    clipboard.then(()=>{feedback.textContent=label+' '+t('скопирован','copied');if(isUnlocked())vaultTouch();})
+      .catch(error=>{feedback.textContent=error.message||t('Копирование не удалось.','Clipboard write failed.');});
+  }
+  function renderList(){
+    if(!isUnlocked()||shownMaster!==vaultMaster){locked();return;}
+    const search=make('input');search.type='search';
+    search.placeholder=t('Поиск по паролям','Search passwords');search.setAttribute('aria-label',search.placeholder);
+    const list=make('div','','vault-widget-list');
+    const disable=button(t('Выключить виджет','Turn off widget'),'button secondary small-btn');
+    disable.onclick=()=>setEnabled(false);
+    pane.replaceChildren(search,list,disable);
+    function render(){
+      const q=search.value.trim().toLocaleLowerCase();
+      const found=records.filter(item=>[item.title,item.username,item.group].join(' ').toLocaleLowerCase().includes(q));
+      list.replaceChildren();
+      if(!found.length)list.append(make('p',t('Записи не найдены.','No entries found.')));
+      for(const item of found){
+        const row=make('div','','vault-quick-row'), name=make('div');
+        name.append(make('strong',item.title),make('small',[item.username,item.group].filter(Boolean).join(' · ')));
+        const actions=make('div');
+        const username=button(t('Логин','Username'),'button secondary small-btn');
+        username.disabled=!item.username;username.onclick=()=>copy(item.username,t('Логин','Username'));
+        const password=button(t('Пароль','Password'),'button secondary small-btn');
+        password.onclick=()=>copy(()=>vaultCall('reveal',{id:item.id}).then(x=>x.password),t('Пароль','Password'));
+        const use=button(t('В сервис','Use in service'),'button secondary small-btn');
+        use.onclick=()=>serviceDialog(item.id,item.title);
+        actions.append(username,password,use);row.append(name,actions);list.append(row);
+      }
+    }
+    search.oninput=render;render();
+  }
+  const editorId=document.getElementById('vault-id');
+  const editorTitle=document.getElementById('vault-title');
+  const save=document.getElementById('vault-save');
+  if(save&&editorId){
+    const use=button(t('Сделать сервисным секретом','Create service secret'));
+    use.onclick=()=>{
+      if(editorId.value)serviceDialog(editorId.value,editorTitle.value);
+      else toast(t('Сначала откройте сохранённую запись.','Open a saved entry first.'));
+    };
+    save.after(use);
+  }
+  async function serviceDialog(entry,title){
+    if(!isUnlocked())return toast(t('Откройте KDBX.','Unlock KDBX first.'));
+    const dialog=make('dialog','','panel maintenance-dialog vault-service-dialog'),form=make('form');
+    form.append(make('h2',t('Сервисный секрет','Service secret')),make('p',title));
+    form.append(make('p',t('Выбранные инструменты будут использовать секрет с закрытым KDBX. Действующие разрешения сохраняются. Для автовыбора привяжите запись к узлу.',
+                           'Allowed tools can use the secret while KDBX is locked. Existing grants stay active. Bind it to a node for automatic use.'),'fine-print'));
+    const permissions=make('fieldset'),nodeLabel=make('label',t('Привязать к узлу Pi (необязательно)','Bind to a Pi node (optional)'));
+    const select=make('select'),status=make('p','','fine-print'),actions=make('div','','form-actions');
+    status.setAttribute('role','status');status.textContent=t('Читаем настройки…','Loading settings…');
+    permissions.append(make('legend',t('Разрешить использование','Allow usage')));
+    const scopes=new Map();
+    for(const [id,ru,eng] of [['nodes','Узлы Pi','Pi nodes'],['ssh','Терминал и SSH','Terminal and SSH'],['ai','ИИ-сервисы','AI services']]){
+      const option=make('input');option.type='checkbox';option.value=id;
+      const label=make('label');label.append(option,make('span',t(ru,eng)));permissions.append(label);scopes.set(id,option);
+    }
+    nodeLabel.append(select);
+    const done=make('button',t('Сохранить','Save'),'button primary');done.disabled=true;
+    const cancel=button(t('Закрыть','Close'));cancel.onclick=()=>dialog.close();
+    actions.append(done,cancel);form.append(permissions,nodeLabel,status,actions);dialog.append(form);
+    dialog.addEventListener('close',()=>dialog.remove(),{once:true});
+    document.body.append(dialog);dialog.showModal();
+    try{
+      const settings=await api('/api/platform/vault-tools');
+      if(!dialog.open)return;
+      if(!settings.available)throw Error(t('Хранилище сервисных секретов недоступно.','Service secret store is unavailable.'));
+      const current=settings.entries.find(x=>x.id===entry);
+      for(const [key,option] of scopes)option.checked=current?current.scopes.includes(key):key==='nodes';
+      for(const [key,option] of scopes)option.disabled=!!current?.scopes.includes(key);
+      select.add(new Option(t('Без привязки','No binding'),''));
+      for(const item of settings.nodes)select.add(new Option(item.name+' · '+item.host,item.id));
+      select.onchange=()=>{if(select.value)scopes.get('nodes').checked=true;};
+      status.textContent='';done.disabled=false;
+    }catch(error){status.textContent=error.message;}
+    form.onsubmit=async e=>{
+      e.preventDefault();
+      if(!isUnlocked()){status.textContent=t('Хранилище заблокировано.','Vault is locked.');return;}
+      done.disabled=true;
+      try{
+        vaultTouch();
+        const result=await api('/api/platform/vault-tools',{method:'POST',body:JSON.stringify({
+          entry,master:vaultMaster,node:select.value,scopes:[...scopes].filter(([,option])=>option.checked).map(([id])=>id)
+        })});
+        status.textContent=result.message;
+      }catch(error){status.textContent=error.message;}
+      finally{done.disabled=false;}
+    };
+  }
+  visibility();
+})();

@@ -120,3 +120,5 @@ For a remote MCP client, add `--listen --certificate <tls-cert> --private-key <t
 For a dedicated MCP service identity, add `--peer-credentials <mode-0600-json>` with a JSON mapping of allowed node IDs to random 64-character lowercase hex tokens. An administrator provisions the matching SHA-256 hex digest in `/opt/pi-node/mcp-diagnostics.sha256` on each node (mode `0600`). This credential grants the four diagnostic snapshots only.
 
 For direct Apple Screen Sharing, run `sudo python3 scripts/install-novnc-client.py` on the controller and restart `pi-dashboard.service`. The Mac profile opens in the existing authenticated dashboard HTTPS origin and requires browser trust for its certificate. The controller must be able to reach the Mac Screen Sharing service on port 5900 over Tailscale.
+
+See the [SD-card data protection and recovery guide](docs/SD-PROTECTION.md).

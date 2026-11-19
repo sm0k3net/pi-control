@@ -13,7 +13,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'src'))
@@ -128,6 +128,32 @@ class NodeTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 node_features.accept_remote_lans({'enabled':True})
             run.assert_not_called()
+
+    def test_service_secret_binding_checks_password_before_persisting(self):
+        node = {'id':'test-node','entry':'old','host':'100.100.0.1',
+                'port':8484,'fingerprint':'A'*64}
+        persist = Mock()
+        save = Mock(return_value={'id':'entry','message':'saved'})
+        store = SimpleNamespace(LOCK=threading.RLock(),save=save,
+                                listing=lambda:{'entries':[{'id':'entry','scopes':['ai']}]})
+        v = SimpleNamespace(dispatch=lambda op,d:{'password':'fixture','title':'test',
+                                                    'username':'user'})
+        data = {'entry':'entry','master':'fixture-master','scopes':['nodes'],'node':'test-node'}
+        with patch.dict(sys.modules,{'service_secrets':store,'vault':v}), \
+             patch.object(node_features.cluster5,'get',return_value=[node]), \
+             patch.object(node_features.cluster5.extras,'atomic',persist,create=True):
+            with patch.object(node_features,'get_peer',side_effect=ValueError('invalid')):
+                with self.assertRaises(ValueError):
+                    node_features.enroll_service_secret(data)
+            save.assert_not_called()
+            persist.assert_not_called()
+            with patch.object(node_features,'get_peer',return_value={'system':{}}) as peer:
+                result = node_features.enroll_service_secret(data)
+            self.assertEqual(result['id'],'entry')
+            peer.assert_called_once()
+            self.assertEqual(node['entry'],'entry')
+            self.assertEqual(save.call_args.args[0]['scopes'],['ai','nodes'])
+            persist.assert_called_once()
 
     def test_mcp_scope_hides_other_nodes_and_rejects_unlisted_tools(self):
         mcp=load_module(REPO/'scripts/pi-node-mcp.py','node_mcp')
