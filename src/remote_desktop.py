@@ -334,7 +334,9 @@ MAC_HTML = '''<!DOCTYPE html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Mac · Pi Control</title><link rel="stylesheet" href="/maintenance-ui.css"></head>
 <body class="mac-desktop"><header><div><a href="/">Pi Control</a><h1>Общий экран Mac</h1></div>
-<p id="mac-status" role="status">Подключаемся по Tailscale…</p></header>
+<div class="mac-controls"><label>Режим изображения <select id="mac-mode">
+<option value="compat">Совместимость Mac</option><option value="auto">Автоматический</option></select></label>
+<button id="mac-refresh" disabled>Обновить экран</button><p id="mac-status" role="status">Подключаемся по Tailscale…</p></div></header>
 <main id="mac-screen"></main>
 <dialog id="mac-login"><form><h2>Вход на Mac</h2><label id="mac-user-row">Имя пользователя macOS
 <input name="username" autocomplete="username"></label><label>Пароль Mac<input name="password" type="password" autocomplete="current-password"></label>
@@ -342,19 +344,52 @@ MAC_HTML = '''<!DOCTYPE html>
 <script type="module" src="/mac-desktop.js"></script></body></html>'''
 
 MAC_SCRIPT = '''import RFB from '/pc-novnc/core/rfb.js';
+
+// These protocol hooks match the pinned noVNC 1.6.0 browser client.
+class MacRFB extends RFB {
+  _sendEncodings() {
+    if(document.getElementById('mac-mode').value==='auto')return super._sendEncodings();
+    // Raw pixels and DesktopSize only. Avoid optional codecs and cursor/resize
+    // extensions until the Mac has sent an image that this client can render.
+    RFB.messages.clientEncodings(this._sock,[0,-223]);
+  }
+  refreshFrame() {
+    if(this._rfbConnectionState!=='connected'||!this._fbWidth||!this._fbHeight)return;
+    this._sendEncodings();
+    RFB.messages.fbUpdateRequest(this._sock,false,0,0,this._fbWidth,this._fbHeight);
+  }
+  _framebufferUpdate() {
+    const complete=super._framebufferUpdate();
+    if(complete) this.dispatchEvent(new CustomEvent('mac-frame',{
+      detail:{width:this._fbWidth,height:this._fbHeight}
+    }));
+    return complete;
+  }
+}
 const query = new URLSearchParams(location.hash.slice(1));
 const ticket = query.get('ticket');
 history.replaceState(null,'',location.pathname);
 const status=document.getElementById('mac-status');
 const dialog=document.getElementById('mac-login');
 const form=dialog.querySelector('form');
-let rfb, reason='';
+let rfb, reason='', waitFrame;
+const refresh=document.getElementById('mac-refresh');
+const mode=document.getElementById('mac-mode');
+function requestFrame(){
+  if(!rfb)return;
+  clearTimeout(waitFrame);
+  status.textContent='Запрашиваем полный кадр…';
+  rfb.refreshFrame();
+  waitFrame=setTimeout(()=>{
+    status.textContent='Кадр пока не получен. Проверьте, что Mac не спит, или смените режим изображения.';
+  },6000);
+}
 if (!ticket || !window.isSecureContext || !crypto.subtle) {
   status.textContent=ticket?'Браузеру нужен доверенный HTTPS-сертификат панели.':'Откройте сеанс заново из Pi Control.';
 } else {
   const socket=new URL('/api/platform/mac-rfb',location.href);
   socket.protocol='wss:';
-  rfb=new RFB(document.getElementById('mac-screen'),socket.href,{wsProtocols:['binary','pc-'+ticket]});
+  rfb=new MacRFB(document.getElementById('mac-screen'),socket.href,{shared:true,wsProtocols:['binary','pc-'+ticket]});
   rfb.scaleViewport=true;
   form.elements.username.value=query.get('username')||'';
   rfb.addEventListener('credentialsrequired',event=>{
@@ -367,17 +402,28 @@ if (!ticket || !window.isSecureContext || !crypto.subtle) {
     (needsUser&&!form.elements.username.value?form.elements.username:form.elements.password).focus();
     status.textContent='Mac запрашивает учётные данные.';
   });
-  rfb.addEventListener('connect',()=>{status.textContent='Подключено · Tailscale';});
+  rfb.addEventListener('connect',()=>{
+    refresh.disabled=false;
+    status.textContent='Вход принят · ждём изображение';
+    waitFrame=setTimeout(requestFrame,2400);
+  });
+  rfb.addEventListener('mac-frame',event=>{
+    clearTimeout(waitFrame);
+    status.textContent='Экран Mac · '+event.detail.width+' × '+event.detail.height;
+  });
   rfb.addEventListener('securityfailure',event=>{
     reason=event.detail.reason||'Mac отклонил вход.';
     status.textContent=reason;
   });
   rfb.addEventListener('disconnect',()=>{
+    clearTimeout(waitFrame);refresh.disabled=true;
     if(dialog.open)dialog.close();
     form.elements.password.value='';
     status.textContent=reason||'Соединение закрыто. Повторите вход из карточки Mac.';
   });
 }
+refresh.onclick=requestFrame;
+mode.onchange=()=>{if(!refresh.disabled)requestFrame();};
 form.onsubmit=event=>{
   event.preventDefault();
   rfb.sendCredentials({username:form.elements.username.value,password:form.elements.password.value});

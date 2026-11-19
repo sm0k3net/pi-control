@@ -287,3 +287,60 @@ def action(data):
         except (KeyError, TypeError, ValueError, OSError, http.client.HTTPException) as exc:
             error = str(exc) if isinstance(exc, ValueError) else 'Связь с узлом недоступна.'
     raise ValueError(error)
+
+
+CREDENTIAL_SCOPES = frozenset(('nodes','ssh','ai'))
+
+
+def secret_catalog():
+    try:
+        import service_secrets
+    except ImportError:
+        return {'available':False,'entries':[],'nodes':[]}
+    return {'available':True,'entries':service_secrets.listing()['entries'],
+            'nodes':status()['nodes']}
+
+
+def enroll_service_secret(data):
+    try:
+        import service_secrets
+    except ImportError:
+        raise ValueError('Хранилище сервисных секретов ещё не настроено.') from None
+    import vault
+
+    entry, master = data.get('entry'), data.get('master')
+    scopes = data.get('scopes')
+    node_id = data.get('node')
+    if not isinstance(entry,str) or not isinstance(master,str) or not master:
+        raise ValueError('Откройте KDBX и выберите сохранённую запись.')
+    if (not isinstance(scopes,list) or not scopes or
+            any(not isinstance(scope,str) or scope not in CREDENTIAL_SCOPES for scope in scopes)):
+        raise ValueError('Выберите, где разрешено использовать секрет.')
+    node = None
+    if node_id:
+        if 'nodes' not in scopes:
+            raise ValueError('Разрешите использование в разделе «Узлы Pi».')
+        node = next((item for item in cluster5.get() if item['id']==node_id),None)
+        if not node:
+            raise ValueError('Узел больше не подключён.')
+    record = vault.dispatch('reveal',{'id':entry,'master':master})
+    if node is not None:
+        try:
+            get_peer(node,record['password'],'/api/status')
+        except (OSError,http.client.HTTPException):
+            raise ValueError('Связь с узлом недоступна. Привязка не изменена.') from None
+    with service_secrets.LOCK:
+        known = next((item for item in service_secrets.listing()['entries'] if item['id']==entry),{})
+        result = service_secrets.save({**record,'id':entry,
+                                      'scopes':sorted(set(scopes)|set(known.get('scopes',[])))})
+    if node is not None:
+        with cluster5.lock:
+            nodes=cluster5.get()
+            current=next((item for item in nodes if item['id']==node_id),None)
+            fields=('host','port','fingerprint','entry')
+            if not current or any(current.get(k)!=node.get(k) for k in fields):
+                return {'id':result['id'],'message':'Секрет создан. Узел изменился во время проверки, привязка не обновлена.'}
+            current['entry']=entry
+            cluster5.extras.atomic(cluster5.FILE,nodes)
+        return {'id':result['id'],'message':'Секрет проверен и привязан к узлу. Он будет использоваться при закрытом KDBX.'}
+    return {'id':result['id'],'message':result['message']}
