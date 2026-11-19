@@ -34,7 +34,7 @@ def status():
     except FileNotFoundError:
         targets = []
     return {'targets': targets, 'viewers': {'vnc': bool(viewer('vnc')),
-                                            'mac': '/pc-novnc/core/rfb.js' in NOVNC_ASSETS,
+                                            'mac': '/pc-novnc/core/rfb.js' in NOVNC_ASSETS or ARD_SCRIPT in NOVNC_ASSETS,
                                             'rdp': bool(viewer('rdp') and terminal())}}
 
 
@@ -138,6 +138,8 @@ def action(data):
             if not target:
                 raise ValueError('Рабочий стол не найден.')
             if op == 'open':
+                if target['protocol']=='mac':
+                    return mac_session(target,legacy=data.get('legacy') is True)
                 return launch(target)
             if op != 'remove':
                 raise ValueError('Неизвестное действие.')
@@ -147,12 +149,18 @@ def action(data):
 
 
 NOVNC = Path(__file__).resolve().parent / 'novnc-client'
-NOVNC_ASSETS = {
-    '/pc-novnc/' + path.relative_to(NOVNC).as_posix(): path
-    for group in ('core', 'vendor')
-    for path in (NOVNC / group).rglob('*.js')
-    if path.is_file() and not path.is_symlink()
-}
+ARD_ROOT = NOVNC.parent / 'novnc-ard'
+ARD_SCRIPT = '/pc-ard/ard/ard-patch.js'
+
+
+def browser_assets(root, prefix, directories):
+    return {prefix + path.relative_to(root).as_posix(): path
+            for folder in directories for path in (root/folder).rglob('*.js')
+            if path.is_file() and not path.is_symlink()}
+
+
+NOVNC_ASSETS = {**browser_assets(NOVNC,'/pc-novnc/',('core','vendor')),
+                **browser_assets(ARD_ROOT,'/pc-ard/',('ard','noVNC/core','noVNC/vendor'))}
 MAC_PAGE = '/mac-desktop.html'
 MAC_CODE = '/mac-desktop.js'
 MAC_SOCKET = '/api/platform/mac-rfb'
@@ -172,8 +180,9 @@ def mac_connection(address):
     return socket.create_connection((address, 5900), timeout=6)
 
 
-def mac_session(target):
-    if '/pc-novnc/core/rfb.js' not in NOVNC_ASSETS:
+def mac_session(target, legacy=False):
+    apple = not legacy and ARD_SCRIPT in NOVNC_ASSETS
+    if not apple and '/pc-novnc/core/rfb.js' not in NOVNC_ASSETS:
         raise ValueError('Модуль noVNC ещё не установлен.')
     address = target['address']
     try:
@@ -193,7 +202,8 @@ def mac_session(target):
         if len(MAC_TICKETS) >= 20:
             raise ValueError('Слишком много ожидающих сеансов. Повторите через минуту.')
         MAC_TICKETS[ticket] = (now + 60, address)
-    return {'url': MAC_PAGE + '#' + urlencode({'ticket':ticket, 'username':target.get('username','')})}
+    return {'url': MAC_PAGE + '#' + urlencode({'ticket':ticket, 'username':target.get('username',''),
+                                                   'engine':'ard' if apple else 'legacy'})}
 
 
 def mac_get(handler):
@@ -341,37 +351,51 @@ MAC_HTML = '''<!DOCTYPE html>
 <dialog id="mac-login"><form><h2>Вход на Mac</h2><label id="mac-user-row">Имя пользователя macOS
 <input name="username" autocomplete="username"></label><label>Пароль Mac<input name="password" type="password" autocomplete="current-password"></label>
 <button type="submit">Подключиться</button><button type="button" id="mac-cancel">Отмена</button></form></dialog>
+<dialog id="mac-session-choice"><h2>Какой экран открыть?</h2><p>Mac запросил тип сеанса после входа.</p>
+<button type="button" id="mac-share-screen">Экран Mac</button>
+<button type="button" id="mac-virtual-screen">Виртуальный экран</button>
+<button type="button" id="mac-stop-choice">Отмена</button></dialog>
 <script type="module" src="/mac-desktop.js"></script></body></html>'''
 
-MAC_SCRIPT = '''import RFB from '/pc-novnc/core/rfb.js';
+MAC_SCRIPT = '''
+const query = new URLSearchParams(location.hash.slice(1));
+const apple=query.get('engine')==='ard';
+let RFB;
+try {
+  if(apple){
+    RFB=(await import('/pc-ard/noVNC/core/rfb.js')).default;
+    await import('/pc-ard/ard/ard-patch.js');
+  }else RFB=(await import('/pc-novnc/core/rfb.js')).default;
+}catch(error){
+  document.getElementById('mac-status').textContent='Не удалось загрузить клиент общего экрана.';
+  throw error;
+}
 
-// These protocol hooks match the pinned noVNC 1.6.0 browser client.
 class MacRFB extends RFB {
   _sendEncodings() {
-    if(document.getElementById('mac-mode').value==='auto')return super._sendEncodings();
-    // Raw pixels and DesktopSize only. Avoid optional codecs and cursor/resize
-    // extensions until the Mac has sent an image that this client can render.
+    if(apple||document.getElementById('mac-mode').value==='auto')return super._sendEncodings();
     RFB.messages.clientEncodings(this._sock,[0,-223]);
   }
   refreshFrame() {
     if(this._rfbConnectionState!=='connected'||!this._fbWidth||!this._fbHeight)return;
+    if(apple&&this._rfbAppleARD)return this._ardRequestFullUpdate(this._fbWidth,this._fbHeight);
     this._sendEncodings();
     RFB.messages.fbUpdateRequest(this._sock,false,0,0,this._fbWidth,this._fbHeight);
   }
   _framebufferUpdate() {
     const complete=super._framebufferUpdate();
-    if(complete) this.dispatchEvent(new CustomEvent('mac-frame',{
+    if(complete&&this._fbWidth&&this._fbHeight)this.dispatchEvent(new CustomEvent('mac-frame',{
       detail:{width:this._fbWidth,height:this._fbHeight}
     }));
     return complete;
   }
 }
-const query = new URLSearchParams(location.hash.slice(1));
 const ticket = query.get('ticket');
 history.replaceState(null,'',location.pathname);
 const status=document.getElementById('mac-status');
 const dialog=document.getElementById('mac-login');
 const form=dialog.querySelector('form');
+const choice=document.getElementById('mac-session-choice');
 let rfb, reason='', waitFrame;
 const refresh=document.getElementById('mac-refresh');
 const mode=document.getElementById('mac-mode');
@@ -391,6 +415,22 @@ if (!ticket || !window.isSecureContext || !crypto.subtle) {
   socket.protocol='wss:';
   rfb=new MacRFB(document.getElementById('mac-screen'),socket.href,{shared:true,wsProtocols:['binary','pc-'+ticket]});
   rfb.scaleViewport=true;
+  if(apple){
+    mode.options[0].textContent='Стандартный ARD';
+    mode.options[1].textContent='Автокачество ARD';
+    rfb.ardQualityPreset='millions';
+    const share=document.getElementById('mac-share-screen'),virtual=document.getElementById('mac-virtual-screen');
+    rfb.addEventListener('ardsessionselect',event=>{
+      virtual.disabled=!(event.detail.allowedCommands&4);
+      share.disabled=!(event.detail.allowedCommands&3);
+      status.textContent='Mac запрашивает тип сеанса.';
+      if(!choice.open)choice.showModal();
+    });
+    share.onclick=()=>{choice.close();rfb.selectSessionType(1);};
+    virtual.onclick=()=>{choice.close();rfb.selectSessionType(2);};
+    document.getElementById('mac-stop-choice').onclick=()=>{choice.close();rfb.disconnect();};
+    choice.addEventListener('cancel',()=>rfb.disconnect());
+  }
   form.elements.username.value=query.get('username')||'';
   rfb.addEventListener('credentialsrequired',event=>{
     const needsUser=event.detail.types.includes('username');
@@ -418,12 +458,16 @@ if (!ticket || !window.isSecureContext || !crypto.subtle) {
   rfb.addEventListener('disconnect',()=>{
     clearTimeout(waitFrame);refresh.disabled=true;
     if(dialog.open)dialog.close();
+    if(choice.open)choice.close();
     form.elements.password.value='';
     status.textContent=reason||'Соединение закрыто. Повторите вход из карточки Mac.';
   });
 }
 refresh.onclick=requestFrame;
-mode.onchange=()=>{if(!refresh.disabled)requestFrame();};
+mode.onchange=()=>{
+  if(apple&&rfb)rfb.ardQualityPreset=mode.value==='auto'?'adaptive':'millions';
+  if(!refresh.disabled)requestFrame();
+};
 form.onsubmit=event=>{
   event.preventDefault();
   rfb.sendCredentials({username:form.elements.username.value,password:form.elements.password.value});

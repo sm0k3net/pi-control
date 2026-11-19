@@ -297,8 +297,12 @@ def secret_catalog():
         import service_secrets
     except ImportError:
         return {'available':False,'entries':[],'nodes':[]}
-    return {'available':True,'entries':service_secrets.listing()['entries'],
-            'nodes':status()['nodes']}
+    nodes = cluster5.get()
+    entries = service_secrets.listing()['entries']
+    for entry in entries:
+        entry['nodes'] = [node['name'] for node in nodes if node.get('entry')==entry['id']]
+    return {'available':True,'entries':entries,
+            'nodes':[{key:node[key] for key in ('id','name','host')} for node in nodes]}
 
 
 def enroll_service_secret(data):

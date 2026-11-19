@@ -29,6 +29,29 @@ class DesktopAndKnowledgeTest(unittest.TestCase):
                 desktop.mac_connection('192.168.1.1')
             run.assert_not_called()
 
+    def test_mac_uses_apple_engine_with_explicit_legacy_fallback(self):
+        import io
+        from contextlib import contextmanager
+        from urllib.parse import parse_qs,urlsplit
+
+        @contextmanager
+        def connection(address):
+            class Peer:
+                def makefile(self,mode):
+                    return io.BytesIO(b'RFB 003.889\n')
+            yield Peer()
+
+        target = {'address':'100.100.0.1','username':'fixture'}
+        assets = {desktop.ARD_SCRIPT:Path('/'),'/pc-novnc/core/rfb.js':Path('/')}
+        with patch.object(desktop,'NOVNC_ASSETS',assets), \
+             patch.object(desktop,'MAC_TICKETS',{}), \
+             patch.object(desktop,'mac_connection',side_effect=connection):
+            for legacy,engine in ((False,'ard'),(True,'legacy')):
+                result = desktop.mac_session(target,legacy)
+                query = parse_qs(urlsplit(result['url']).fragment)
+                self.assertEqual(query['engine'],[engine])
+                self.assertEqual(query['username'],['fixture'])
+
     def test_knowledge_indexes_nested_content_and_skips_symlinks(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work) / 'Knowledge'
