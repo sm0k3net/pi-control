@@ -1,0 +1,13 @@
+[Unit]
+Description=Restore Pi Control service preferences
+After=docker.service network-online.target pi-dashboard.service
+Wants=network-online.target docker.service
+ConditionPathExists=/opt/pi-dashboard/boot-service-preferences.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/pi-dashboard/dashboard_platform.py --restore-services
+TimeoutStartSec=35min
+
+[Install]
+WantedBy=multi-user.target

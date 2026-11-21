@@ -38,7 +38,7 @@ These are actual screenshots supplied by the project owner from an earlier versi
 
 - **Overview and monitoring:** CPU/load, memory, storage, temperature and system information, depending on host support.
 - **Services:** status and controls for selected Docker services and host workflows. Service actions rely on host-specific commands and Docker resources that are not included in this snapshot.
-- **Files:** a two-pane browser for selected local roots, selected browser-device operations, archives, sharing and Telegram integration. SSH-node file browsing and limited upload/download exist; cross-node transfer and complete remote file operations are not implemented.
+- **Files:** a two-pane browser for selected local roots, browser-device operations, archives, sharing and Telegram integration. Cross-node streaming is available between enrolled nodes' transfer folders. SSH-node browsing has its own smaller set of operations.
 - **Terminal:** browser terminal using the vendored xterm.js assets, with local and SSH-node functionality. It grants command execution and requires strong access control.
 - **Pi nodes:** SSH discovery and pinned host-key connections, resource checks, assisted deployment of a lightweight node panel and basic container controls. Automatic distributed workload scheduling is not implemented.
 - **Lightweight node panel:** overview, monitoring, network, Tailscale route status, read-only settings and browsing/downloading files under `/home`; Docker start/stop. This is not a full installation of the main panel.
@@ -122,3 +122,7 @@ For a dedicated MCP service identity, add `--peer-credentials <mode-0600-json>` 
 For direct Apple Screen Sharing, run `sudo python3 scripts/install-novnc-client.py` on the controller and restart `pi-dashboard.service`. The Mac profile opens in the existing authenticated dashboard HTTPS origin and requires browser trust for its certificate. The controller must be able to reach the Mac Screen Sharing service on port 5900 over Tailscale.
 
 See the [SD-card data protection and recovery guide](docs/SD-PROTECTION.md).
+
+### Controller operations and node backup
+
+The controller can preserve Start and Stop preferences across reboot once its boot integration is installed. Settings supports age-encrypted backups to a paired Pi, where complete sets can be downloaded after integrity verification. The optional Bitwarden CLI connector supports Bitwarden and Vaultwarden account sign-in, listing and secure clipboard actions. Open Knowledge to find the built-in English service and feature reference. See the updated [installation guide](docs/INSTALLATION.md) and [node guide](docs/NODE-INSTALL.md).

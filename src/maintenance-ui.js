@@ -1123,3 +1123,223 @@ piUiReady(() => {
   }
   visibility();
 });
+
+piUiReady(() => {
+  const byId=id=>document.getElementById(id);
+  const el=(tag,value='',cls='')=>{
+    const item=document.createElement(tag);item.textContent=value;
+    if(cls)item.className=cls;
+    return item;
+  };
+  const button=(name,cls='button secondary')=>{
+    const item=el('button',name,cls);item.type='button';return item;
+  };
+  const post=(path,data)=>api(path,{method:'POST',body:JSON.stringify(data)});
+  const field=(title,input)=>{
+    const label=el('label',title);label.append(input);return label;
+  };
+  const input=(type='text')=>{const item=el('input');item.type=type;return item;};
+
+  const login=byId('login');
+  const form=byId('login-form'),password=byId('password');
+  if(login&&form&&password){
+    const card=form.closest('.login-card');
+    const toggle=form.querySelector('.product-password-toggle');
+    if(card&&toggle){
+      card.classList.add('login-access-card');
+      const row=el('div','','login-access-input');
+      password.before(row);row.append(password,toggle);
+      form.querySelector('button[type=submit]')?.classList.add('login-access-submit');
+      const error=byId('login-error');
+      if(error)password.setAttribute('aria-describedby',error.id);
+      form.addEventListener('submit',()=>{password.type='password';});
+    }
+  }
+
+  const cluster=byId('page-cluster');
+  if(cluster){
+    const panel=el('section','','panel node-enrollment-workspace');
+    panel.append(el('h2','Поиск и подключение Pi'),
+      el('p','Найденные через mDNS и Tailscale устройства. Подключение подтверждается отпечатком TLS.','fine-print'));
+    const actions=el('div','','form-actions'),discover=button('Найти узлы','button primary');
+    const manual=button('Добавить вручную'),list=el('div','','node-found-list');
+    const state=el('p','','fine-print');state.setAttribute('role','status');
+    actions.append(discover,manual);panel.append(actions,state,list);
+    cluster.querySelector('.page-intro')?.after(panel);
+    function fill(item={}){
+      byId('node-host').value=item.host||'';
+      if(item.port)byId('node-port').value=item.port;
+      byId('node-name').value=item.name||'';
+      byId('node-fingerprint').value='';
+      byId('node-host').focus();
+    }
+    manual.onclick=()=>fill();
+    discover.onclick=async()=>{
+      discover.disabled=true;
+      state.textContent='Ищем опубликованные узлы…';
+      try{
+        const result=await post('/api/platform/node-tools',{op:'discover-pi'});
+        list.replaceChildren();
+        for(const item of result.items){
+          const row=el('div','','linked-file'),meta=el('div');
+          meta.append(el('strong',item.name),el('p',item.host+' · '+item.source));
+          const use=button(item.enrolled?'Уже подключён':'Выбрать');
+          use.disabled=item.enrolled;use.onclick=()=>fill(item);
+          const choices=el('div','','form-actions');choices.append(use);
+          const ssh=button('Подготовить SSH');
+          ssh.onclick=()=>{
+            if(byId('ssh-host')){
+              byId('ssh-host').value=item.host;
+              byId('ssh-name').value=item.name;
+              byId('ssh-port').value=22;
+              byId('ssh-key-fingerprint').value='';
+              byId('ssh-host').focus();
+            }
+          };
+          choices.append(ssh);row.append(meta,choices);list.append(row);
+        }
+        state.textContent=result.items.length?'Выберите узел из списка.':'Узлы не найдены. Можно добавить вручную.';
+      }catch(error){state.textContent=error.message;}
+      finally{discover.disabled=false;}
+    };
+    const add=byId('node-add'),fingerprint=byId('node-fingerprint');
+    if(add&&fingerprint){
+      const verify=button('Получить отпечаток');
+      fingerprint.after(verify);
+      verify.onclick=async()=>{
+        verify.disabled=true;
+        try{
+          const data=await post('/api/platform/node-tools',{op:'probe-pi',host:byId('node-host').value.trim(),
+            port:Number(byId('node-port').value)});
+          fingerprint.value=data.fingerprint;
+          state.textContent='Сравните SHA-256 с отпечатком на самом узле перед подключением.';
+        }catch(error){state.textContent=error.message;}
+        finally{verify.disabled=false;}
+      };
+      add.onclick=async()=>{
+        if(!confirm('Отпечаток TLS сверен на самом узле?'))return;
+        add.disabled=true;
+        const manual=byId('node-manual-panel-password');
+        try{
+          const result=await post('/api/platform/node-tools',{op:'pair-pi',name:byId('node-name').value,
+            host:byId('node-host').value.trim(),port:Number(byId('node-port').value),
+            fingerprint:fingerprint.value,entry:byId('node-secret')?.value||'',
+            password:manual?.value||'',master:typeof vaultMaster==='string'?vaultMaster:''});
+          if(manual)manual.value='';
+          state.textContent=result.message;
+          if(typeof loadCluster==='function')loadCluster();
+        }catch(error){state.textContent=error.message;toast(error.message);}
+        finally{add.disabled=false;}
+      };
+    }
+  }
+
+  const backup=byId('backup-info')?.closest('.panel');
+  if(backup){
+    const group=el('details','','maintenance-wizard');
+    group.append(el('summary','Копия на другом узле Pi'));
+    const description=el('p','Архивы шифруются age на этом Pi и проверяются по SHA-256 на узле.');
+    const select=el('select'),sets=el('select'),password=input('password');
+    password.autocomplete='off';
+    const options=el('div','','maintenance-grid');
+    options.append(field('Подключённый узел',select),field('Пароль узла (если нет секрета)',password),field('Готовая копия',sets));
+    const run=button('Создать копию','button primary'),verify=button('Проверить'),refresh=button('Обновить список');
+    const actions=el('div','','form-actions'),message=el('p','','maintenance-status');
+    message.setAttribute('role','status');actions.append(run,verify,refresh);
+    group.append(description,options,actions,message);backup.append(group);
+    const url='/api/platform/node-backup';
+    const request=op=>post(url,{op,id:select.value,set:sets.value,password:password.value,
+      master:typeof vaultMaster==='string'?vaultMaster:''});
+    let timer;
+    async function read(){
+      const res=await api(url);
+      if(!select.options.length)select.replaceChildren(...res.nodes.map(item=>new Option(item.name,item.id)));
+      run.disabled=!res.recipient_ready||!select.value||res.job.state==='running';
+      verify.disabled=!sets.value||res.job.state==='running';
+      message.textContent=res.job.message||(!res.recipient_ready?'Настройте публичный ключ age.':'');
+      if(group.open&&res.job.state==='running')timer=setTimeout(()=>read().catch(showError),2500);
+    }
+    const showError=error=>{message.textContent=error.message;};
+    group.addEventListener('toggle',()=>{clearTimeout(timer);if(group.open)read().catch(showError);});
+    select.onchange=()=>{sets.replaceChildren();verify.disabled=true;};
+    refresh.onclick=async()=>{
+      try{
+        const res=await request('catalog');
+        sets.replaceChildren(...res.items.map(value=>new Option(value,value)));
+        verify.disabled=!sets.value;
+        message.textContent=res.items.length?'Список обновлён.':'Копий на узле пока нет.';
+      }catch(error){showError(error);}
+    };
+    async function runJob(op){
+      try{await request(op);password.value='';await read();}
+      catch(error){showError(error);}
+    }
+    run.onclick=()=>runJob('start');verify.onclick=()=>runJob('verify');
+  }
+
+  const serviceView=document.querySelector('#page-vault .vault-service-view');
+  if(serviceView){
+    const root=el('details','','bitwarden-panel');
+    root.append(el('summary','Bitwarden / Vaultwarden'));
+    root.append(el('p','Подключение по HTTPS и персональному API-ключу. Сессия закрывается через 5 минут.','fine-print'));
+    const form=el('form','','maintenance-grid');
+    const server=input('url'),id=input(),key=input('password'),master=input('password');
+    server.placeholder='https://vault.bitwarden.com';
+    for(const item of [server,id,key,master]){item.autocomplete='off';item.required=true;}
+    form.append(field('HTTPS-сервер',server),field('Client ID',id),field('Client secret',key),field('Мастер-пароль',master));
+    const submit=el('button','Подключиться','button primary');
+    form.append(submit);root.append(form);
+    const tools=el('div','','form-actions'),query=input('search'),search=button('Найти'),lock=button('Закрыть сессию');
+    query.placeholder='Имя записи';query.setAttribute('aria-label','Поиск по Bitwarden');
+    const listing=el('div'),status=el('p','','fine-print');status.setAttribute('role','status');
+    tools.hidden=true;tools.append(query,search,lock);root.append(tools,listing,status);serviceView.append(root);
+    const path='/api/platform/bitwarden';
+    let session='',timer;
+    async function load(){
+      const data=await post(path,{op:'list',session,query:query.value});
+      listing.replaceChildren();
+      if(!data.items.length)listing.append(el('p','Записи не найдены.'));
+      for(const record of data.items){
+        const row=el('div','','linked-file'),name=el('div'),buttons=el('div');
+        name.append(el('strong',record.name),el('p',record.username));
+        for(const [field,title] of [['username','Логин'],['password','Пароль']]){
+          const copy=button(title);
+          copy.onclick=async()=>{
+            try{
+              const payload=post(path,{op:'copy',session,id:record.id,field});
+              if(window.ClipboardItem&&navigator.clipboard?.write)
+                await navigator.clipboard.write([new ClipboardItem({'text/plain':payload.then(
+                  value=>new Blob([value.value],{type:'text/plain'}))})]);
+              else await navigator.clipboard.writeText((await payload).value);
+              status.textContent=title+' скопирован.';
+            }catch(error){status.textContent=error.message;}
+          };
+          buttons.append(copy);
+        }
+        row.append(name,buttons);listing.append(row);
+      }
+    }
+    function hide(){
+      session='';tools.hidden=true;form.hidden=false;listing.replaceChildren();clearTimeout(timer);
+    }
+    submit.onclick=undefined;
+    form.onsubmit=async event=>{
+      event.preventDefault();submit.disabled=true;
+      try{
+        const payload={op:'connect',server:server.value,client_id:id.value,client_secret:key.value,password:master.value};
+        key.value=master.value='';
+        status.textContent='Открываем хранилище…';
+        const result=await post(path,payload);
+        session=result.session;tools.hidden=false;form.hidden=true;
+        timer=setTimeout(()=>{hide();status.textContent='Срок сессии истёк.';},result.seconds*1000);
+        status.textContent='Подключено.';await load();
+      }catch(error){status.textContent=error.message;}
+      finally{submit.disabled=false;}
+    };
+    search.onclick=()=>load().catch(error=>{status.textContent=error.message;});
+    lock.onclick=async()=>{
+      try{await post(path,{op:'lock',session});}catch{}
+      hide();status.textContent='Сессия закрыта.';
+    };
+  }
+});

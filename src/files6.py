@@ -46,26 +46,83 @@ def mcp_knowledge():
  return BUILTIN_MCP
 
 
+SERVICE_GUIDE = """# Pi Control Service and Feature Reference
+
+## Getting started
+
+Use the controller's private HTTPS address on your LAN or Tailscale. The dashboard is a privileged control plane. Configure the panel credentials and trust the administrator-confirmed TLS certificate before entering any secrets. Check the System and Services pages after installation. Current container names, service URLs and limits come from the deployed configuration.
+
+## Services
+
+| Service | Purpose |
+| --- | --- |
+| Agent Zero | Optional AI agent workspace. Review available tools and permissions before allowing actions. |
+| DeepSeek Harness | Optional local AI workspace and agent integration when installed on the controller. |
+| Portainer | Container inventory, logs and lifecycle management on the controller. |
+| PostgreSQL | Database service with SQL-consistent backup when configured. Optional Supabase workflows are described in Settings. |
+| Ollama | Local models for the Knowledge area and AI chat. Review memory limits before loading models. |
+| Nextcloud | File collaboration and sharing. |
+| ONLYOFFICE | Document editing, optionally connected to Nextcloud. |
+| n8n | Automation and workflow scheduling. |
+| OWASP ZAP and ZAP API | Optional tools for authorized security reviews. |
+| Pi-hole | On-demand DNS filtering and local DNS dashboard. |
+| Gluetun | Route selected containers through an administrator-configured VPN. |
+| Tor | Optional configured proxy. Availability and controls depend on the installation. |
+| Tailscale | Private connectivity, approved subnet routes and node access. |
+| Cloudflare Tunnel | Published file links or connected service routes when configured. |
+| Local Desktop, VNC and noVNC | Pi desktop access and an optional browser viewer. Remote Mac, VNC and RDP profiles appear under System. |
+
+Use Start and Stop on the Services page. On the configured controller and current lightweight nodes, startup preferences follow panel actions. Running containers use a restart policy, and the controller boot unit restores the saved preference. The controller installation requires the service-state hook and its boot unit.
+
+## Dashboard features
+
+- **Overview and System:** node health, memory and disk usage, history where configured, power controls, remote desktops and the local desktop.
+- **Files:** two panes for approved roots, USB discovery, browser upload, ZIP archives, file sharing, and scoped remote node access. Supported transfer operations depend on the selected endpoint.
+- **Terminal:** interactive local and SSH tabs. Selecting a host with an existing tab brings it forward. Close individual sessions when finished.
+- **Pi nodes:** discover lightweight agents advertised over mDNS and Raspberry-named Tailscale peers. Unknown devices can be entered manually. Compare the SHA-256 TLS fingerprint with a trusted source before enrollment. Verify node logins and results. The SSH setup flow checks the SSH host key and administrator authorization before installation.
+- **Lightweight nodes:** health and container controls, diagnostics, local network information, Bluetooth and Wi-Fi discovery, files, USB reading, backup downloads, and Tailscale subnet route settings. Node access may also be provided to selected diagnostic MCP tools.
+- **Network:** network status and explicitly authorized discovery or diagnostics. Device visibility depends on routing, filtering, adapter capabilities and network policy.
+- **VPN and tunnels:** settings for Gluetun, Tailscale, other available proxies and permitted file publishing. An approved subnet route can reach a node LAN without an exit node.
+- **AI:** local Ollama and supported remote providers. Scope any service secret to the relevant application before using it.
+- **Passwords and secrets:** KDBX list, search, import/export, grouping, password generation, separately copied usernames and passwords, floating widget and service scopes. Optional Bitwarden and Vaultwarden account access uses the official CLI, a personal API key and a short-lived unlock session. The integration supports search and field copy.
+- **Knowledge:** file-based collection of Markdown and text notes with folder navigation, search and preview. The separate MCP guide covers the active endpoint and authorization.
+- **Settings:** display options, notifications, platform integration, storage and backups, safe update and rollback. Telegram delivery requires an administrator-configured bot and destination.
+- **MCP:** the optional authenticated endpoint exposes read-only node inventory, health, interfaces, known neighbors and Bluetooth records for approved nodes. See the dedicated MCP note.
+
+## Backup and recovery
+
+- **USB:** encrypted age backups, integrity checks, scheduled or insertion-driven operation when configured, and extraction into a separate recovery directory. Keep the recovery identity outside the device.
+- **Pi node destination:** select a paired lightweight node. The controller creates encrypted archives, streams them over certificate-pinned HTTPS, and the receiver publishes the set after checking size and SHA-256. Use an existing scoped node credential or provide its panel password. Lightweight nodes expose completed sets for authenticated download. The manifest contains recovery metadata.
+- **Restore remote copy:** download all files from the same backup set. Check them against the manifest, then use the recovery process and the off-device age identity. The remote receiver does not require the private key.
+- **Updates:** apply the verified GitHub server and UI packages from Settings. Complementary system integration scripts and lightweight agents are maintained separately.
+- **Physical protection:** plan LUKS2 migration on a spare SD card and verify recovery before switching. The dashboard sign-in controls application access.
+
+Keep this guide alongside the installation and operations documentation in the repository. The default note is created when the Knowledge workspace is opened.
+"""
+
+
 def ensure_builtin_knowledge():
  base=ROOTS['knowledge']
+ if base.is_symlink():return
  try:
-  if base.is_symlink():return
-  try:
-   base.mkdir()
-  except FileExistsError:
-   pass
-  else:
-   owner(base,base.parent)
-  path=base/BUILTIN_MCP_NAME
-  if path.exists() or path.is_symlink():return
-  content=mcp_knowledge()
-  fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-  with os.fdopen(fd,'w',encoding='utf-8') as file:
-   file.write(content)
-   file.flush()
-   os.fsync(file.fileno())
-  owner(path,base)
- except (FileExistsError,OSError):
+  try:base.mkdir()
+  except FileExistsError:pass
+  else:owner(base,base.parent)
+  for name, content in ((BUILTIN_MCP_NAME,mcp_knowledge),
+                        ('Pi Control — Service and Feature Reference.md',lambda:SERVICE_GUIDE)):
+   path=base/name
+   if path.exists() or path.is_symlink():continue
+   try:
+    document=content()
+    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'w',encoding='utf-8') as file:
+     file.write(document)
+     file.flush()
+     os.fsync(file.fileno())
+    owner(path,base)
+   except OSError:
+    pass
+ except OSError:
   pass
 
 def validname(name):

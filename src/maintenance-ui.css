@@ -143,3 +143,15 @@ body { -webkit-tap-highlight-color:#25825e24; }
 #mac-session-choice { border:0; border-radius:14px; padding:22px; width:min(90%,440px); color:#174334; }
 #mac-session-choice::backdrop { background:#0b1917b0; }
 #mac-session-choice button { padding:9px 12px; margin:3px; }
+
+#login .login-access-card { max-width:465px; padding:36px; border:1px solid #e1ebe6; border-radius:22px; box-shadow:0 18px 60px #12332612; }
+#login .login-access-card h1 { margin:22px 0 8px; }
+.login-access-input { position:relative; display:flex; align-items:center; margin-top:8px; }
+.login-access-input input { width:100%; padding-right:135px; min-height:50px; }
+.login-access-input .product-password-toggle { position:absolute; right:8px; margin:0; padding:6px 9px; border-radius:8px; background:#ebf4ee; color:#20583f; }
+.login-access-submit { min-height:48px; border-radius:12px; font-weight:700; }
+.node-found-list,.bitwarden-panel { margin-top:12px; }
+.bitwarden-panel > summary { padding:8px 0; cursor:pointer; font-weight:700; }
+.bitwarden-panel [hidden] { display:none!important; }
+.bitwarden-panel .linked-file button { margin:3px; }
+@media(max-width:650px){#login .login-access-card { border:0; box-shadow:none; border-radius:0; padding:24px; }}

@@ -155,6 +155,40 @@ class NodeTest(unittest.TestCase):
             self.assertEqual(save.call_args.args[0]['scopes'],['ai','nodes'])
             persist.assert_called_once()
 
+    def test_remote_receiver_rejects_cleartext_and_publishes_verified_set(self):
+        with tempfile.TemporaryDirectory() as work, patch.dict(os.environ,{'PI_NODE_ROOT':work}):
+            root=Path(work)
+            (root/'config.json').write_text('{}')
+            agent=load_module(REPO/'src/pi_node_agent.py','node_backup_fixture')
+            name='backup-2026-11-21T09-00-00Z-12345678'
+            with self.assertRaises(ValueError):
+                agent.backup_upload(SimpleNamespace(rfile=io.BytesIO(b'cleartext payload'*3)),
+                                    name,agent.BACKUP_PARTS[0],51)
+            self.assertEqual(agent.backup_catalog()['items'],[])
+            parts={}
+            for part in agent.BACKUP_PARTS:
+                payload=b'age-encryption.org/v1\n'+part.encode()
+                agent.backup_upload(SimpleNamespace(rfile=io.BytesIO(payload)),name,part,len(payload))
+                parts[part]={'size':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}
+            manifest={'schema':1,'files':parts}
+            self.assertEqual(agent.backup_catalog()['items'],[])
+            agent.backup_operation('/api/backup-commit',{'set':name,'manifest':manifest})
+            self.assertEqual(agent.backup_catalog()['items'],[name])
+            self.assertGreater(agent.backup_operation('/api/backup-verify',{'set':name})['bytes'],0)
+            with self.assertRaises(ValueError):
+                agent.backup_folder('../bad')
+
+    def test_pair_checks_authenticated_status_before_saving(self):
+        data={'host':'100.100.0.3','port':8484,'fingerprint':'A'*64,'name':'Test Pi','password':'fixture'}
+        with patch.object(node_features.cluster5,'create') as create:
+            with patch.object(node_features,'get_peer',return_value={'system':{}}):
+                with self.assertRaises(ValueError):
+                    node_features.pair_node(data)
+            create.assert_not_called()
+            with patch.object(node_features,'get_peer',return_value={'system':{},'services':[]}):
+                node_features.pair_node(data)
+            self.assertTrue(create.call_args.args[0]['manual'])
+
     def test_mcp_scope_hides_other_nodes_and_rejects_unlisted_tools(self):
         mcp=load_module(REPO/'scripts/pi-node-mcp.py','node_mcp')
         backend=SimpleNamespace(status=lambda:{'nodes':[{'id':'allowed'},{'id':'blocked'}]},

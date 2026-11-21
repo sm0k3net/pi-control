@@ -28,7 +28,7 @@ def status():
    x=json.loads(line);name=x['Names']
    if re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}',name):rows.append({'id':name,'name':name,'state':x.get('State','unknown'),'status':x.get('Status','')})
   except (ValueError,KeyError):pass
- return {'system':{'memory_total':mem.get('MemTotal',0),'memory_available':mem.get('MemAvailable',0),'memory_used':mem.get('MemTotal',0)-mem.get('MemAvailable',0),'disk_total':disk.total,'disk_free':disk.free,'disk_used':disk.used,'temperature':temperature,'load':os.getloadavg()[0],'uptime':int(float(Path('/proc/uptime').read_text().split()[0]))},'services':rows[:150]}
+ return {'system':{'hostname':socket.gethostname(),'memory_total':mem.get('MemTotal',0),'memory_available':mem.get('MemAvailable',0),'memory_used':mem.get('MemTotal',0)-mem.get('MemAvailable',0),'disk_total':disk.total,'disk_free':disk.free,'disk_used':disk.used,'temperature':temperature,'load':os.getloadavg()[0],'uptime':int(float(Path('/proc/uptime').read_text().split()[0]))},'services':rows[:150]}
 def network_status():
  def parsed(args,default):
   try:return json.loads(command(args,8))
@@ -294,8 +294,8 @@ def upload_file(handler, path, length):
     return {'bytes': length}
 
 
-def download_file(handler, path):
-    with share_parent(path) as (root, name):
+def download_file(handler, path, parent=share_parent):
+    with parent(path) as (root, name):
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root)
     with os.fdopen(fd, 'rb') as source:
         info = os.fstat(source.fileno())
@@ -511,6 +511,127 @@ def mcp_diagnostic(handler):
     return handler.respond(200, diagnostics(task))
 
 
+BACKUPS = ROOT / 'backups'
+BACKUP_PARTS = ('home.tar.gz.age','services.tar.gz.age')
+BACKUP_SET = re.compile(r'backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z-[a-f0-9]{8}')
+BACKUP_RECEIVE_LOCK = threading.Lock()
+
+
+def backup_folder(name, pending=False):
+    if not isinstance(name,str) or not BACKUP_SET.fullmatch(name):
+        raise ValueError('Имя резервной копии недопустимо.')
+    BACKUPS.mkdir(mode=0o700,exist_ok=True)
+    if BACKUPS.is_symlink():
+        raise ValueError('Каталог резервных копий недоступен.')
+    folder=BACKUPS/(('.partial-' if pending else '')+name)
+    if folder.is_symlink():
+        raise ValueError('Каталог резервной копии недоступен.')
+    return folder
+
+
+def backup_upload(handler, name, part, length):
+    if part not in BACKUP_PARTS or not 22<=length<=FILE_LIMIT:
+        raise ValueError('Недопустимый файл резервной копии.')
+    with BACKUP_RECEIVE_LOCK:
+        folder=backup_folder(name,True)
+        if backup_folder(name).exists():
+            raise ValueError('Эта копия уже подтверждена.')
+        folder.mkdir(mode=0o700,exist_ok=True)
+        if shutil.disk_usage(folder).free-length<256*1024**2:
+            raise ValueError('На узле недостаточно свободного места.')
+        header=handler.rfile.read(22)
+        if header!=b'age-encryption.org/v1\n':
+            raise ValueError('Узел принимает только зашифрованные архивы age.')
+        path=folder/part
+        fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
+        try:
+            with os.fdopen(fd,'wb') as stream:
+                stream.write(header)
+                remaining=length-len(header)
+                while remaining:
+                    chunk=handler.rfile.read(min(CHUNK,remaining))
+                    if not chunk:
+                        raise ValueError('Передача резервной копии прервана.')
+                    stream.write(chunk)
+                    remaining-=len(chunk)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except (OSError,ValueError):
+            path.unlink(missing_ok=True)
+            raise
+    return {'bytes':length}
+
+
+def verify_backup(folder, manifest):
+    if not isinstance(manifest,dict) or manifest.get('schema')!=1 or set(manifest.get('files') or {})!=set(BACKUP_PARTS):
+        raise ValueError('Неизвестный формат резервной копии.')
+    size=0
+    for part in BACKUP_PARTS:
+        path=folder/part
+        entry=manifest['files'][part]
+        if (path.is_symlink() or not path.is_file() or not isinstance(entry,dict)
+                or type(entry.get('size')) is not int or path.stat().st_size!=entry['size']):
+            raise ValueError('Размер зашифрованного архива не совпадает.')
+        with path.open('rb') as stream:
+            if stream.read(22)!=b'age-encryption.org/v1\n':
+                raise ValueError('Архив не зашифрован.')
+            stream.seek(0)
+            if hashlib.file_digest(stream,'sha256').hexdigest()!=entry.get('sha256'):
+                raise ValueError('SHA-256 зашифрованного архива не совпадает.')
+        size+=entry['size']
+    return {'bytes':size}
+
+
+def backup_operation(path, data):
+    name=data.get('set')
+    with BACKUP_RECEIVE_LOCK:
+        folder=backup_folder(name,path in ('/api/backup-commit','/api/backup-abort'))
+        if path=='/api/backup-abort':
+            if folder.is_dir():
+                shutil.rmtree(folder)
+            return {'ok':True}
+        if path=='/api/backup-verify':
+            return verify_backup(folder,json.loads((folder/'manifest.json').read_bytes()))
+        manifest=data.get('manifest')
+        result=verify_backup(folder,manifest)
+        destination=backup_folder(name)
+        if destination.exists():
+            raise ValueError('Копия с таким именем уже существует.')
+        fd=os.open(folder/'manifest.json',os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,'w',encoding='utf-8') as stream:
+            json.dump(manifest,stream,ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        folder.rename(destination)
+        fd=os.open(BACKUPS,os.O_DIRECTORY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+        return result
+
+
+def backup_catalog():
+    BACKUPS.mkdir(mode=0o700,exist_ok=True)
+    if BACKUPS.is_symlink():
+        raise ValueError('Каталог резервных копий недоступен.')
+    names=sorted((path.name for path in BACKUPS.iterdir()
+                  if BACKUP_SET.fullmatch(path.name) and not path.is_symlink()
+                  and (path/'manifest.json').is_file()),reverse=True)
+    return {'items':names[:150]}
+
+
+@contextmanager
+def backup_download(path):
+    name, part = path
+    if part not in (*BACKUP_PARTS,'manifest.json'):
+        raise ValueError('Файл недоступен.')
+    folder=backup_folder(name)
+    if not (folder/'manifest.json').is_file():
+        raise ValueError('Копия не подтверждена.')
+    descriptor=os.open(folder,os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:yield descriptor,part
+    finally:os.close(descriptor)
+
+
 def authorised(handler):
  try:
   c=SimpleCookie();c.load(handler.headers.get('Cookie',''));token=c['pi_session'].value
@@ -533,6 +654,17 @@ class Handler(BaseHTTPRequestHandler):
   if self.path=='/api/network':return self.respond(200,network_status())
   if self.path=='/api/tunnels':return self.respond(200,tunnel_status())
   route=urlsplit(self.path)
+  if route.path=='/api/backup-catalog':
+   try:return self.respond(200,backup_catalog())
+   except (ValueError,OSError):return self.respond(503,{'error':'Каталог копий недоступен.'})
+  if route.path=='/api/backup-download':
+   options=parse_qs(route.query)
+   if not TRANSFER_LOCK.acquire(blocking=False):return self.respond(503,{'error':'Заняты все слоты передачи.'})
+   try:
+    self.connection.settimeout(40)
+    return download_file(self,(options.get('set',[''])[0],options.get('part',[''])[0]),backup_download)
+   except (OSError,ValueError):return self.respond(404,{'error':'Копия недоступна.'})
+   finally:TRANSFER_LOCK.release()
   if route.path in ('/api/share', '/api/share-download'):
    path=parse_qs(route.query).get('path',[''])[0]
    try:
@@ -571,6 +703,16 @@ class Handler(BaseHTTPRequestHandler):
   origin=self.headers.get('Origin','');host=self.headers.get('Host','')
   if origin!='https://'+host:return self.respond(403,{'error':'Invalid origin'})
   route=urlsplit(self.path)
+  if route.path=='/api/backup-upload':
+   if not authorised(self):return self.respond(401,{'error':'Sign in required'})
+   try:
+    self.connection.settimeout(45)
+    options=parse_qs(route.query)
+    if self.headers.get('Transfer-Encoding'):raise ValueError('Требуется Content-Length.')
+    return self.respond(201,backup_upload(self,options.get('set',[''])[0],
+                     options.get('part',[''])[0],int(self.headers.get('Content-Length','0'))))
+   except (ValueError,OSError):return self.respond(400,{'error':'Не удалось принять архив.'})
+   finally:self.close_connection=True
   if route.path=='/api/share-upload':
    if not authorised(self):return self.respond(401,{'error':'Sign in required'})
    if not TRANSFER_LOCK.acquire(blocking=False):return self.respond(503,{'error':'Заняты все слоты передачи.'})
@@ -606,6 +748,9 @@ class Handler(BaseHTTPRequestHandler):
     with guard:sessions.pop(c['pi_session'].value,None)
    except Exception:pass
    return self.respond(200,{'ok':True},extra={'Set-Cookie':'pi_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0'})
+  if self.path in ('/api/backup-verify','/api/backup-commit','/api/backup-abort'):
+   try:return self.respond(200,backup_operation(self.path,data))
+   except (ValueError,OSError,TypeError):return self.respond(400,{'error':'Проверьте комплект и целостность зашифрованных архивов.'})
   if self.path=='/api/subnet-route':
    try:return self.respond(200,advertise_lan(data))
    except (ValueError,OSError) as error:return self.respond(400,{'error':str(error)})
@@ -623,11 +768,17 @@ class Handler(BaseHTTPRequestHandler):
    if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}',name) or action not in ('start','stop','restart'):return self.respond(400,{'message':'Invalid operation'})
    try:p=subprocess.run(['docker',action,name],capture_output=True,text=True,timeout=60)
    except Exception:return self.respond(503,{'message':'Docker unavailable'})
+   if p.returncode==0 and action in ('start','stop'):
+    policy='unless-stopped' if action=='start' else 'no'
+    try:
+     p=subprocess.run(['docker','update','--restart='+policy,name],capture_output=True,text=True,timeout=15)
+    except (OSError,subprocess.SubprocessError):
+     return self.respond(503,{'message':'Docker restart policy could not be saved'})
    return self.respond(200 if p.returncode==0 else 409,{'message':'Done' if p.returncode==0 else 'Docker action failed'})
   return self.respond(404,{'error':'Not found'})
-HTML='''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pi Control Node</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head><body><main><header><span>● PI CONTROL / NODE</span><h1>Узел Raspberry Pi<span class="dot">.</span></h1><p>Лёгкая панель удалённого устройства</p></header><section id="login" class="login-card" aria-labelledby="login-title"><div class="login-cover"><strong>Pi Control</strong><h2>Удалённый узел</h2><p>Состояние Raspberry Pi, подключённые устройства и файлы в одной панели.</p></div><div class="login-body"><h2 id="login-title">Войти в панель</h2><form id="form"><label for="password">Пароль узла</label><div class="login-password"><input id="password" type="password" autocomplete="current-password" required><button id="toggle-password" class="secondary" type="button" aria-pressed="false">Показать</button></div><button id="login-submit">Войти</button></form><p id="error" role="alert"></p></div></section><div id="view" hidden><div class="node-bar"><strong>Узел Pi</strong><span>● Подключено</span></div><nav aria-label="Разделы"><button data-tab="overview">Обзор</button><button data-tab="monitor">Мониторинг</button><button data-tab="diagnostics">Диагностика</button><button data-tab="network">Сеть</button><button data-tab="tunnels">Туннели</button><button data-tab="files">Файлы</button><button data-tab="settings">Настройки</button></nav><section><div class="line"><h2 id="heading">Обзор</h2><button id="refresh" class="secondary">Обновить</button></div><div id="content"></div></section><button id="logout" class="secondary">Выйти</button></div></main></body></html>'''
-CSS='''*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:#f3f7f4;color:#193027;font:15px system-ui}main{max-width:1050px;margin:4vh auto;padding:20px}header span{color:#b81f49;font-size:12px;letter-spacing:.15em;font-weight:700}header .dot{font-size:inherit}h1{font-size:clamp(30px,5vw,46px);margin:12px 0}header p,section p{color:#6e8578}section{background:#fff;border:1px solid #e1ebe4;border-radius:18px;padding:24px;margin:20px 0;box-shadow:0 8px 30px #1c46300c}input,button{font:inherit;border:1px solid #d7e5db;border-radius:9px;padding:10px}input{max-width:100%}button{background:#186441;color:#fff;cursor:pointer}button.secondary,nav button{background:#fff;color:#245841}nav{display:flex;gap:7px;flex-wrap:wrap}nav button.active{background:#186441;color:#fff}.line,.row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.row{border-top:1px solid #edf3ee;padding:12px 0}.metrics{display:flex;gap:12px;flex-wrap:wrap}.metric{background:#f4f9f5;border-radius:10px;padding:15px;flex:1;min-width:140px}.muted{color:#6e8578;font-size:13px}.name{overflow-wrap:anywhere}.error{color:#ad2445}a{color:#186441}.diagnostic-output{margin-top:1rem}.diagnostic-output pre{overflow:auto;max-height:28rem;background:#f4f9f5;padding:1rem;border-radius:10px}.diagnostic-output button{margin:3px}body:has(#view[hidden]) main>header{display:none}body:has(#view[hidden]) main{min-height:90vh;display:grid;place-items:center}.login-card{display:grid;grid-template-columns:1fr 1fr;overflow:hidden;padding:0;width:min(100%,860px);box-shadow:0 18px 60px #243a3420}.login-cover,.login-body{padding:clamp(22px,5vw,50px)}.login-cover{background:#a62953;color:white}.login-cover strong{font-size:1.2rem}.login-cover h2{font-size:clamp(26px,4vw,44px);margin:32px 0 8px}.login-cover p{color:#fff0f5}.login-body form{display:grid;gap:12px}.login-password{display:flex;gap:5px}.login-password input{flex:1;width:0}.login-body #error{color:#9c2247}.tool-grid{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.share-board,.discover-card{margin-top:16px}.discover-card label{display:block;margin-top:10px}.share-board progress{width:min(160px,100%)}@media(max-width:620px){.login-card{grid-template-columns:1fr}.login-cover h2{margin-top:12px}}.node-bar{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #e2ece6;padding:12px 0;margin-bottom:12px}.node-bar strong{font-size:1.25rem}.node-bar span{background:#e5f5eb;color:#175d3e;padding:6px 10px;border-radius:20px;font-weight:600;font-size:.85rem}#view nav{gap:4px;background:#e9f2ed;border:1px solid #deebe3;border-radius:14px;padding:6px}#view nav button{padding:10px 14px;border:0;background:transparent}#view nav button.active{background:white;color:#124d34;box-shadow:0 2px 6px #214e2c1a}#view section>.line{border-bottom:1px solid #eaf0ec;margin-bottom:15px;padding-bottom:12px}#view h2{margin:0}.discover-card{background:#f4f9f6;border:1px solid #dcece2;border-radius:14px;padding:16px}.discover-card h3{margin:0}.row .name{font-weight:600}.row a{padding:8px 12px;border-radius:8px;background:#e9f4ee;text-decoration:none}@media(max-width:610px){#view nav button{flex:1 1 auto}#view section{padding:16px}.metric{min-width:120px}}button:focus-visible,a:focus-visible{outline:3px solid #bc4a6a;outline-offset:2px}'''
-JS='''"use strict";const $=x=>document.querySelector(x);let tab='overview',dir='';const labels={overview:'Обзор',monitor:'Мониторинг',network:'Сеть',diagnostics:'Диагностика и USB',tunnels:'Туннели',files:'Файлы',settings:'Настройки'};async function api(url,data){let r=await fetch(url,{method:data?'POST':'GET',headers:data?{'Content-Type':'application/json'}:{},body:data?JSON.stringify(data):undefined,credentials:'same-origin'});let x=await r.json();if(!r.ok)throw Error(x.error||x.message||'Ошибка');return x}function text(tag,value,cls){let e=document.createElement(tag);e.textContent=value;if(cls)e.className=cls;return e}function row(parent,name,value){let r=text('div','','row');r.append(text('span',name,'name'),text('span',String(value),'muted'));parent.append(r)}function metrics(root,s){let box=text('div','','metrics');for(let [a,b] of [['ОЗУ занято',(s.memory_used/1073741824).toFixed(2)+' ГиБ'],['Диск свободен',(s.disk_free/1073741824).toFixed(2)+' ГиБ'],['Нагрузка CPU',Number(s.load).toFixed(2)],['Время работы',Math.floor(s.uptime/3600)+' ч']])box.append(text('div',a+': '+b,'metric'));root.append(box)}async function load(){try{let d=await api('/api/status');$('#login').hidden=true;$('#view').hidden=false;$('#heading').textContent=labels[tab];document.querySelectorAll('[data-tab]').forEach(e=>e.classList.toggle('active',e.dataset.tab===tab));let root=$('#content');root.replaceChildren();if(tab==='overview'||tab==='monitor'){metrics(root,d.system);if(tab==='monitor'){row(root,'ОЗУ всего',(d.system.memory_total/1073741824).toFixed(2)+' ГиБ');row(root,'Диск всего',(d.system.disk_total/1073741824).toFixed(2)+' ГиБ');row(root,'Диск занято',(d.system.disk_used/1073741824).toFixed(2)+' ГиБ');row(root,'Температура',d.system.temperature===null?'нет данных':d.system.temperature+' °C')}else{root.append(text('h3','Контейнеры'));for(let c of d.services){let r=text('div','','row');r.append(text('span',c.name+' · '+c.state,'name'));let b=text('button',c.state==='running'?'Остановить':'Запустить');b.onclick=async()=>{try{await api('/api/action',{service:c.id,action:c.state==='running'?'stop':'start'});load()}catch(e){alert(e.message)}};r.append(b);root.append(r)}if(!d.services.length)root.append(text('p','Контейнеров нет.'))}}else if(tab==='diagnostics'){diagnosticView(root)}else if(tab==='network'){let n=await api('/api/network');root.append(text('h3','Интерфейсы'));for(let i of n.interfaces)row(root,i.name+' · '+i.state,i.addresses.join(', ')||'нет адреса');root.append(text('h3','Маршруты IPv4'));for(let r of n.routes)row(root,r.dst||'default',[r.gateway,r.dev].filter(Boolean).join(' · '));row(root,'Пересылка IPv4',n.forwarding?'включена':'выключена');discoveryView(root,n.attached_networks||{})}else if(tab==='tunnels'){let t=await api('/api/tunnels');root.append(text('p','Состояние Tailscale и объявленных маршрутов. Изменение маршрутов выполняется администратором.'));row(root,'Tailscale',t.available?'доступен':'недоступен');row(root,'Приём маршрутов',t.accept_routes?'включён':'выключен');for(let r of t.advertised_routes)row(root,'Объявленный маршрут',r);if(!t.advertised_routes.length)root.append(text('p','Объявленных маршрутов нет.'));lanRoutes(root,t)}else if(tab==='files'){shareBrowser(root)}else if(tab==='settings'){root.append(text('p','Облегчённая панель работает с отдельным паролем и HTTPS-сертификатом. Доступны прямые подключения по локальной сети и Tailscale.'));row(root,'Режим','Управляемый узел');row(root,'Порт панели',location.port||'443');row(root,'Безопасность','HTTPS · отдельная сессия');root.append(text('p','Пароль и сетевые параметры панели в этом разделе пока изменить нельзя.','muted'))}}catch(e){if(/Sign in/.test(e.message)){$('#login').hidden=false;$('#view').hidden=true}else{$('#content').replaceChildren(text('p',e.message,'error'))}}}document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;load()});$('#form').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{password:$('#password').value});$('#password').value='';$('#error').textContent='';load()}catch(e){$('#error').textContent=e.message}};$('#refresh').onclick=load;$('#logout').onclick=async()=>{await api('/api/logout',{});location.reload()};load();
+HTML='''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pi Control Node</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head><body><main><header><span>● PI CONTROL / NODE</span><h1>Узел Raspberry Pi<span class="dot">.</span></h1><p>Лёгкая панель удалённого устройства</p></header><section id="login" class="login-card" aria-labelledby="login-title"><div class="login-cover"><strong>Pi Control</strong><h2>Удалённый узел</h2><p>Состояние Raspberry Pi, подключённые устройства и файлы в одной панели.</p></div><div class="login-body"><h2 id="login-title">Войти в панель</h2><form id="form"><label for="password">Пароль узла</label><div class="login-password"><input id="password" type="password" autocomplete="current-password" required><button id="toggle-password" class="secondary" type="button" aria-pressed="false">Показать</button></div><button id="login-submit">Войти</button></form><p id="error" role="alert"></p></div></section><div id="view" hidden><div class="node-bar"><strong id="node-view-name">Узел Pi</strong><span>● Подключено</span></div><nav aria-label="Разделы"><button data-tab="overview">Обзор</button><button data-tab="monitor">Мониторинг</button><button data-tab="diagnostics">Диагностика</button><button data-tab="network">Сеть</button><button data-tab="tunnels">Туннели</button><button data-tab="files">Файлы</button><button data-tab="backups">Резервные копии</button><button data-tab="settings">Настройки</button></nav><section><div class="line"><h2 id="heading">Обзор</h2><button id="refresh" class="secondary">Обновить</button></div><div id="content"></div></section><button id="logout" class="secondary">Выйти</button></div></main></body></html>'''
+CSS='''*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:#f3f7f4;color:#193027;font:15px system-ui}main{max-width:1050px;margin:4vh auto;padding:20px}header span{color:#b81f49;font-size:12px;letter-spacing:.15em;font-weight:700}header .dot{font-size:inherit}h1{font-size:clamp(30px,5vw,46px);margin:12px 0}header p,section p{color:#6e8578}section{background:#fff;border:1px solid #e1ebe4;border-radius:18px;padding:24px;margin:20px 0;box-shadow:0 8px 30px #1c46300c}input,button{font:inherit;border:1px solid #d7e5db;border-radius:9px;padding:10px}input{max-width:100%}button{background:#186441;color:#fff;cursor:pointer}button.secondary,nav button{background:#fff;color:#245841}nav{display:flex;gap:7px;flex-wrap:wrap}nav button.active{background:#186441;color:#fff}.line,.row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.row{border-top:1px solid #edf3ee;padding:12px 0}.metrics{display:flex;gap:12px;flex-wrap:wrap}.metric{background:#f4f9f5;border-radius:10px;padding:15px;flex:1;min-width:140px}.muted{color:#6e8578;font-size:13px}.name{overflow-wrap:anywhere}.error{color:#ad2445}a{color:#186441}.diagnostic-output{margin-top:1rem}.diagnostic-output pre{overflow:auto;max-height:28rem;background:#f4f9f5;padding:1rem;border-radius:10px}.diagnostic-output button{margin:3px}body:has(#view[hidden]) main>header{display:none}body:has(#view[hidden]) main{min-height:90vh;display:grid;place-items:center}.login-card{display:grid;grid-template-columns:1fr 1fr;overflow:hidden;padding:0;width:min(100%,860px);box-shadow:0 18px 60px #243a3420}.login-cover,.login-body{padding:clamp(22px,5vw,50px)}.login-cover{background:#a62953;color:white}.login-cover strong{font-size:1.2rem}.login-cover h2{font-size:clamp(26px,4vw,44px);margin:32px 0 8px}.login-cover p{color:#fff0f5}.login-body form{display:grid;gap:12px}.login-password{display:flex;gap:5px}.login-password input{flex:1;width:0}.login-body #error{color:#9c2247}.tool-grid{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.share-board,.discover-card{margin-top:16px}.discover-card label{display:block;margin-top:10px}.share-board progress{width:min(160px,100%)}@media(max-width:620px){.login-card{grid-template-columns:1fr}.login-cover h2{margin-top:12px}}.node-bar{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #e2ece6;padding:12px 0;margin-bottom:12px}.node-bar strong{font-size:1.25rem}.node-bar span{background:#e5f5eb;color:#175d3e;padding:6px 10px;border-radius:20px;font-weight:600;font-size:.85rem}#view nav{gap:4px;background:#e9f2ed;border:1px solid #deebe3;border-radius:14px;padding:6px}#view nav button{padding:10px 14px;border:0;background:transparent}#view nav button.active{background:white;color:#124d34;box-shadow:0 2px 6px #214e2c1a}#view section>.line{border-bottom:1px solid #eaf0ec;margin-bottom:15px;padding-bottom:12px}#view h2{margin:0}.discover-card{background:#f4f9f6;border:1px solid #dcece2;border-radius:14px;padding:16px}.discover-card h3{margin:0}.row .name{font-weight:600}.row a{padding:8px 12px;border-radius:8px;background:#e9f4ee;text-decoration:none}@media(max-width:610px){#view nav button{flex:1 1 auto}#view section{padding:16px}.metric{min-width:120px}}.node-bar{position:sticky;top:0;background:#f3f7f4;z-index:1;border-radius:10px}.node-bar strong{overflow-wrap:anywhere}.backup-node-set{display:flex;align-items:center;flex-wrap:wrap;gap:9px;padding:12px;border:1px solid #dcece2;border-radius:12px;margin-top:8px}.backup-node-set strong{width:100%;overflow-wrap:anywhere}.backup-node-set a{padding:5px 8px;background:#edf6f0;border-radius:7px}button:focus-visible,a:focus-visible{outline:3px solid #bc4a6a;outline-offset:2px}'''
+JS='''"use strict";const $=x=>document.querySelector(x);let tab='overview',dir='';const labels={overview:'Обзор',monitor:'Мониторинг',network:'Сеть',diagnostics:'Диагностика и USB',tunnels:'Туннели',files:'Файлы',backups:'Резервные копии',settings:'Настройки'};async function api(url,data){let r=await fetch(url,{method:data?'POST':'GET',headers:data?{'Content-Type':'application/json'}:{},body:data?JSON.stringify(data):undefined,credentials:'same-origin'});let x=await r.json();if(!r.ok)throw Error(x.error||x.message||'Ошибка');return x}function text(tag,value,cls){let e=document.createElement(tag);e.textContent=value;if(cls)e.className=cls;return e}function row(parent,name,value){let r=text('div','','row');r.append(text('span',name,'name'),text('span',String(value),'muted'));parent.append(r)}function metrics(root,s){let box=text('div','','metrics');for(let [a,b] of [['ОЗУ занято',(s.memory_used/1073741824).toFixed(2)+' ГиБ'],['Диск свободен',(s.disk_free/1073741824).toFixed(2)+' ГиБ'],['Нагрузка CPU',Number(s.load).toFixed(2)],['Время работы',Math.floor(s.uptime/3600)+' ч']])box.append(text('div',a+': '+b,'metric'));root.append(box)}async function load(){try{let d=await api('/api/status');$('#login').hidden=true;$('#view').hidden=false;$('#node-view-name').textContent=d.system.hostname||'Узел Pi';$('#heading').textContent=labels[tab];document.querySelectorAll('[data-tab]').forEach(e=>e.classList.toggle('active',e.dataset.tab===tab));let root=$('#content');root.replaceChildren();if(tab==='overview'||tab==='monitor'){metrics(root,d.system);if(tab==='monitor'){row(root,'ОЗУ всего',(d.system.memory_total/1073741824).toFixed(2)+' ГиБ');row(root,'Диск всего',(d.system.disk_total/1073741824).toFixed(2)+' ГиБ');row(root,'Диск занято',(d.system.disk_used/1073741824).toFixed(2)+' ГиБ');row(root,'Температура',d.system.temperature===null?'нет данных':d.system.temperature+' °C')}else{root.append(text('h3','Контейнеры'));for(let c of d.services){let r=text('div','','row');r.append(text('span',c.name+' · '+c.state,'name'));let b=text('button',c.state==='running'?'Остановить':'Запустить');b.onclick=async()=>{try{await api('/api/action',{service:c.id,action:c.state==='running'?'stop':'start'});load()}catch(e){alert(e.message)}};r.append(b);root.append(r)}if(!d.services.length)root.append(text('p','Контейнеров нет.'))}}else if(tab==='diagnostics'){diagnosticView(root)}else if(tab==='network'){let n=await api('/api/network');root.append(text('h3','Интерфейсы'));for(let i of n.interfaces)row(root,i.name+' · '+i.state,i.addresses.join(', ')||'нет адреса');root.append(text('h3','Маршруты IPv4'));for(let r of n.routes)row(root,r.dst||'default',[r.gateway,r.dev].filter(Boolean).join(' · '));row(root,'Пересылка IPv4',n.forwarding?'включена':'выключена');discoveryView(root,n.attached_networks||{})}else if(tab==='tunnels'){let t=await api('/api/tunnels');root.append(text('p','Состояние Tailscale и объявленных маршрутов. Изменение маршрутов выполняется администратором.'));row(root,'Tailscale',t.available?'доступен':'недоступен');row(root,'Приём маршрутов',t.accept_routes?'включён':'выключен');for(let r of t.advertised_routes)row(root,'Объявленный маршрут',r);if(!t.advertised_routes.length)root.append(text('p','Объявленных маршрутов нет.'));lanRoutes(root,t)}else if(tab==='files'){shareBrowser(root)}else if(tab==='backups'){await viewBackups(root)}else if(tab==='settings'){root.append(text('p','Облегчённая панель работает с отдельным паролем и HTTPS-сертификатом. Доступны прямые подключения по локальной сети и Tailscale.'));row(root,'Режим','Управляемый узел');row(root,'Порт панели',location.port||'443');row(root,'Безопасность','HTTPS · отдельная сессия');root.append(text('p','Пароль и сетевые параметры панели в этом разделе пока изменить нельзя.','muted'))}}catch(e){if(/Sign in/.test(e.message)){$('#login').hidden=false;$('#view').hidden=true}else{$('#content').replaceChildren(text('p',e.message,'error'))}}}document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;load()});$('#form').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{password:$('#password').value});$('#password').value='';$('#error').textContent='';load()}catch(e){$('#error').textContent=e.message}};$('#refresh').onclick=load;$('#logout').onclick=async()=>{await api('/api/logout',{});location.reload()};load();
 $('#toggle-password').onclick=()=>{
  const input=$('#password'),toggle=$('#toggle-password'),visible=input.type==='password';
  input.type=visible?'text':'password';toggle.setAttribute('aria-pressed',String(visible));
@@ -759,6 +910,21 @@ function discoveryView(root,networks){
  }
 }
 
+async function viewBackups(root){
+ root.append(text('p','Зашифрованные наборы age, принятые от контроллера. Для восстановления нужен ключ, сохранённый отдельно.'));
+ const catalog=await api('/api/backup-catalog');
+ if(!catalog.items.length)root.append(text('p','Подтверждённых копий пока нет.','muted'));
+ for(const name of catalog.items){
+  const block=text('div','','backup-node-set');
+  block.append(text('strong',name));
+  for(const part of ['manifest.json','home.tar.gz.age','services.tar.gz.age']){
+   const link=text('a',part);
+   link.href='/api/backup-download?'+new URLSearchParams({set:name,part});
+   link.download=part;block.append(link);
+  }
+  root.append(block);
+ }
+}
 function lanRoutes(root,status){
  if(!status.available)return;
  const box=text('div','','discover-card');
@@ -842,10 +1008,23 @@ def private_addresses():
     if addr.version==4 and (addr.is_private or addr in ipaddress.ip_network('100.64.0.0/10')) and not addr.is_loopback:out.append(str(addr))
    except Exception:pass
  return sorted(set(out))
+def announce_node(port):
+    executable=shutil.which('avahi-publish-service')
+    if executable:
+        try:
+            return subprocess.Popen([executable, socket.gethostname(), '_pi-control._tcp',
+                                     str(port), 'type=raspberry-pi'],
+                                    stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
+    return None
+
+
 if __name__=='__main__':
  ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);ctx.minimum_version=ssl.TLSVersion.TLSv1_2;ctx.load_cert_chain(str(ROOT/'cert.pem'),str(ROOT/'key.pem'))
  # Reconcile private and Tailscale addresses as interfaces move between networks.
  port=int(CFG.get('port',8484));servers={}
+ publisher=announce_node(port)
  while True:
   addresses=set(private_addresses())
   for addr in addresses-set(servers):
