@@ -116,6 +116,9 @@ def run_action(key,verb):
     extras.set_desired(key,verb=='start')
    if p.returncode==0 and key=='mode-docs' and verb=='start':
     p=subprocess.run(['/usr/local/bin/pi-app','office'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=180,check=False)
+   if p.returncode==0:
+    try:dashboard_platform.record_service_state(key,verb,SERVICES)
+    except (ValueError,OSError,subprocess.SubprocessError):p.returncode=1
    msg='Готово' if p.returncode==0 else 'Операция не выполнена. Проверьте состояние сервиса.'
   except subprocess.TimeoutExpired: msg='Превышено время ожидания; проверьте состояние сервиса.'
   except OSError: msg='Не удалось запустить команду управления.'

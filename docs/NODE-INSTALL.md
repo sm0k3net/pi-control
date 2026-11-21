@@ -34,3 +34,9 @@ Open `https://<node-private-or-tailscale-ip>:8484/` in a trusted network and ver
 ## Partial failures
 
 The installer does not automatically delete partially created data or uninstall packages when a later step fails. Review `systemctl status`, the journal, `/opt/pi-node` and the unit file before a deliberate cleanup or retry. It will refuse to overwrite a partial installation. Do not remove files you need to keep. Recovery and update workflows remain to be developed and tested.
+
+On current nodes, Start and Stop apply a Docker restart policy. The Backups tab lists encrypted sets delivered over pinned HTTPS. Preserve the whole set when downloading. Install avahi-utils and restart the lightweight service for local discovery. If needed, obtain your local TLS fingerprint directly on the node:
+
+    sudo openssl x509 -in /opt/pi-node/cert.pem -noout -fingerprint -sha256
+
+Compare this output on the controller before completing enrollment. Manual IPv4 enrollment is available for networks where mDNS is unavailable.

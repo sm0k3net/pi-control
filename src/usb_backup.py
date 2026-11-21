@@ -412,6 +412,8 @@ def quiesce(containers, harness=False):
 
 
 def checkpoint(config, state, message, **fields):
+    if callable(config.get('_progress')):
+        return config['_progress'](state,message,**fields)
     save(STATUS, {'state': state, 'time': int(time.time()), 'uuid': config.get('uuid', ''),
                   'message': message, **fields})
 
@@ -425,7 +427,7 @@ def build(directory, target, config):
         raise ValueError('Рабочий домашний каталог отсутствует.')
     free = shutil.disk_usage(directory).free
     if free < 256 * 1024 * 1024:
-        raise ValueError('На USB-накопителе осталось меньше 256 МиБ.')
+        raise ValueError('Для архива нужно не менее 256 МиБ свободного места.')
     name = 'backup-' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H-%M-%SZ') + '-' + uuid.uuid4().hex[:8]
     with tempfile.TemporaryDirectory(prefix='.partial-', dir=directory) as working:
         folder = Path(working)
@@ -442,8 +444,10 @@ def build(directory, target, config):
         # Keep installed wrappers needed to restore Pi services.
         configs.update(str(p).lstrip('/') for p in Path('/usr/local/bin').glob('pi-*') if p.is_file())
         paths = sorted(p for p in configs | volumes if (Path('/') / p).exists())
-        if any((Path('/') / p).stat().st_dev == directory.stat().st_dev for p in paths):
+        if not target.get('remote') and any((Path('/') / p).stat().st_dev == directory.stat().st_dev for p in paths):
             raise ValueError('USB-накопитель уже используется как источник данных одного из сервисов.')
+        if any(directory.is_relative_to(Path('/') / p) for p in paths) or directory.is_relative_to(home):
+            raise ValueError('Каталог временного архива входит в источники резервного копирования.')
         with tempfile.TemporaryDirectory(prefix='pi-usb-stage-', dir='/var/tmp') as temp:
             stage = Path(temp)
             with quiesce(writers):
