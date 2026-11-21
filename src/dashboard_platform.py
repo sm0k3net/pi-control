@@ -97,6 +97,7 @@ def sample():
 
 
 BOOT_STATE = ROOT / 'boot-service-preferences.json'
+NATIVE_SERVICES = {'desktop', 'vnc', 'novnc', 'harness'}
 
 
 def runtime_command(args):
@@ -107,7 +108,7 @@ def runtime_command(args):
 
 
 def record_service_state(key, verb, services):
-    if verb not in ('start','stop') or key not in services and key not in ('vnc','desktop','novnc'):
+    if verb not in ('start','stop') or key not in services and key not in NATIVE_SERVICES:
         return
     import fcntl
     with (ROOT/'boot-service-preferences.lock').open('a') as lock:
@@ -119,6 +120,8 @@ def record_service_state(key, verb, services):
         if container:
             policy='unless-stopped' if verb=='start' else 'no'
             runtime_command(['docker','update','--restart='+policy,container])
+        elif key=='harness':
+            runtime_command(['systemctl','enable' if verb=='start' else 'disable','dsh-web.service'])
 
 
 def runtime_service_enabled(key, service):
@@ -129,7 +132,7 @@ def runtime_service_enabled(key, service):
         except ValueError:
             return None
     units={'desktop':['systemctl','is-active','lightdm.service'],
-           'novnc':['systemctl','--user','--machine=sm0k3@.host','is-active','novnc-websockify.service'],
+           'novnc':['systemctl','--user','-M','sm0k3@','is-active','novnc-websockify.service'],
            'vnc':['runuser','-u','sm0k3','--','/usr/local/bin/pi-vnc','status'],
            'harness':['systemctl','is-active','dsh-web.service'],
            'tor':['systemctl','is-active','tor@default.service']}
@@ -148,7 +151,7 @@ def service_boot(bootstrap=False):
     current=usb_backup.load(BOOT_STATE,{}) or {}
     issues=[]
     if bootstrap:
-        keys=set(services)|{'desktop','vnc','novnc'}
+        keys=set(services)|NATIVE_SERVICES
         for key in sorted(keys):
             if key in current or key+':start' not in commands:
                 continue
